@@ -14,8 +14,12 @@ import time
 from collections import deque
 from collections.abc import AsyncIterator
 
+from .models import RunEvent, RunState
+
 TICK_INTERVAL_S = 1.0
 BUFFER_SIZE = 600
+RUN_STREAM_PING_S = 10.0
+TERMINAL_RUN_STATUSES = ("done", "failed", "cancelled", "interrupted", "budget_exhausted")
 
 
 def format_sse(event_id: int, event: str, payload: dict[str, object]) -> str:
@@ -79,3 +83,43 @@ class TickHub:
 
 
 tick_hub = TickHub()
+
+
+async def stream_run_events(run: RunState, last_event_id: int | None) -> AsyncIterator[str]:
+    """Snapshot first, then replay missed events and follow live ones.
+
+    The snapshot always reflects the full current state, so a client that
+    missed events can rebuild without relying on deltas alone.
+    """
+    queue: asyncio.Queue[RunEvent] = asyncio.Queue(maxsize=2000)
+    run.subscribers.add(queue)
+    try:
+        yield ": connected\n\n"
+        newest = last_event_id or 0
+        yield format_sse(newest, "snapshot", run.public())
+        for event in list(run.events):
+            if event.id <= newest:
+                continue
+            newest = event.id
+            yield format_sse(event.id, "run_event", event.public())
+        if run.status in TERMINAL_RUN_STATUSES:
+            yield format_sse(newest, "snapshot", run.public())
+            return
+        while True:
+            try:
+                event = await asyncio.wait_for(queue.get(), timeout=RUN_STREAM_PING_S)
+            except asyncio.TimeoutError:
+                yield ": ping\n\n"
+                if run.status in TERMINAL_RUN_STATUSES:
+                    yield format_sse(newest, "snapshot", run.public())
+                    return
+                continue
+            if event.id <= newest:
+                continue
+            newest = event.id
+            yield format_sse(event.id, "run_event", event.public())
+            if event.kind == "run_finished":
+                yield format_sse(newest, "snapshot", run.public())
+                return
+    finally:
+        run.subscribers.discard(queue)

@@ -12,7 +12,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from .config import settings
-from .events import tick_hub
+from .events import stream_run_events, tick_hub
 from .llm import LlmClient
 from .models import RunState
 from .orchestrator import ResumeError, execute_run, prepare_resume
@@ -199,6 +199,30 @@ def get_run_events(run_id: str) -> dict[str, object]:
     if run is None:
         raise HTTPException(status_code=404, detail="run not found")
     return {"events": [event.public() for event in run.events], "next": run.next_event_id}
+
+
+@app.get("/api/runs/{run_id}/stream")
+async def stream_run(
+    run_id: str, request: Request, last_event_id: int | None = None
+) -> StreamingResponse:
+    run = store.get(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    raw_last = request.headers.get("last-event-id")
+    if raw_last is not None:
+        try:
+            last_event_id = int(raw_last)
+        except ValueError:
+            pass
+    return StreamingResponse(
+        stream_run_events(run, last_event_id),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.get("/api/tick")
