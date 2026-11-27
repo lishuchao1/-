@@ -42,6 +42,8 @@ STRUCTURAL_HINTS = (
 
 QUOTA_HINTS = ("insufficient balance", "quota", "arrears", "余额")
 
+FALLBACK_KINDS = frozenset({"quota", "auth", "retryable", "connect"})
+
 
 class LlmError(Exception):
     def __init__(self, kind: ErrorKind, message: str, status: int | None = None, attempts: int = 1):
@@ -111,6 +113,40 @@ class LlmClient:
             transport=transport,
             trust_env=False,
         )
+
+    async def complete_with_fallback(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        role: str = "main",
+        **kwargs: Any,
+    ) -> tuple[LlmResult, bool]:
+        """Try the primary provider, then the configured fallback on provider-level failure.
+
+        Returns (result, used_fallback). Task-level 400s are never retried on the
+        fallback because switching providers cannot fix a malformed request.
+        """
+        try:
+            return await self.complete(messages, role=role, **kwargs), False
+        except LlmError as primary_error:
+            fallback = self._cfg.fallback
+            if fallback is None or primary_error.kind not in FALLBACK_KINDS:
+                raise
+            logger.warning(
+                "primary failed kind=%s status=%s; switching to fallback base_url=%s",
+                primary_error.kind, primary_error.status, fallback.base_url,
+            )
+            try:
+                result = await self.complete(messages, role=role, provider=fallback, **kwargs)
+            except LlmError as fallback_error:
+                raise LlmError(
+                    fallback_error.kind,
+                    f"primary {primary_error.kind}: {primary_error}; "
+                    f"fallback {fallback_error.kind}: {fallback_error}",
+                    fallback_error.status,
+                    primary_error.attempts + fallback_error.attempts,
+                ) from fallback_error
+            return result, True
 
     async def aclose(self) -> None:
         await self._client.aclose()
