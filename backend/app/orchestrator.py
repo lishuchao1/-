@@ -382,6 +382,28 @@ class RunExecutor:
             return {"error": "invalid_role", "detail": f"role must be one of {sorted(ROLE_PROMPTS)}"}
         if not task:
             return {"error": "invalid_task", "detail": "task must not be empty"}
+        normalized = " ".join(task.lower().split())
+        for existing in run.agents.values():
+            if (
+                existing.role == role
+                and " ".join(existing.task.lower().split()) == normalized
+                and existing.status in ("queued", "running", "done", "partial")
+            ):
+                self.store.append(
+                    run,
+                    "dedupe_skipped",
+                    agent=parent,
+                    summary=f"{role} already handled this task as {existing.id}",
+                    data={"duplicate_of": existing.id, "role": role},
+                )
+                return {
+                    "error": "duplicate_task",
+                    "detail": f"{existing.id} already handled an identical task; reuse its artifacts",
+                    "agent_id": existing.id,
+                    "status": existing.status,
+                    "summary": existing.summary,
+                    "artifact_keys": list(existing.artifact_keys),
+                }
         if parent.depth >= run.max_depth:
             self.store.append(
                 run, "limit_reached", agent=parent, summary=f"depth cap {run.max_depth}",
