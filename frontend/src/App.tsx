@@ -1,57 +1,147 @@
-import { useEffect, useState } from "react";
-import { fetchHealth } from "./api";
+import { useCallback, useEffect, useState } from "react";
+import { cancelRun, fetchHealth, listRuns, resumeRun } from "./api";
+import { EventLog } from "./EventLog";
+import { RunView } from "./RunView";
+import { FaultControl, NewRunForm, RunList } from "./Sidebar";
 import TickPanel from "./TickPanel";
-import type { Health } from "./types";
-
-const styles = {
-  page: { padding: 16, lineHeight: 1.5 } as const,
-  header: { display: "flex", alignItems: "baseline", gap: 12, marginBottom: 12 } as const,
-  ok: { color: "#6ee7a8" } as const,
-  bad: { color: "#f87171" } as const,
-  panel: {
-    border: "1px solid #2a2f37",
-    borderRadius: 6,
-    padding: 10,
-    marginBottom: 10,
-  } as const,
-  muted: { color: "#8b95a3" } as const,
-};
+import { colors, mutedStyle, panelStyle } from "./theme";
+import type { Health, RunListItem } from "./types";
+import { useRunStream } from "./useRunStream";
 
 export default function App() {
   const [health, setHealth] = useState<Health | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [runs, setRuns] = useState<RunListItem[]>([]);
+  const [selected, setSelected] = useState<string | null>(null);
+  const [epoch, setEpoch] = useState(0);
+  const [busy, setBusy] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const { run, events, streamState } = useRunStream(selected, epoch);
+
+  const refreshRuns = useCallback(async () => {
+    try {
+      const data = await listRuns();
+      setRuns(data.runs);
+    } catch {
+      // backend may still be starting
+    }
+  }, []);
 
   useEffect(() => {
     fetchHealth()
       .then(setHealth)
-      .catch((err: unknown) => setError(String(err)));
+      .catch(() => setHealth(null));
   }, []);
 
+  useEffect(() => {
+    refreshRuns();
+    const timer = window.setInterval(refreshRuns, 3000);
+    return () => window.clearInterval(timer);
+  }, [refreshRuns]);
+
+  useEffect(() => {
+    if (!selected && runs.length > 0) {
+      setSelected(runs[0].run_id);
+    }
+  }, [runs, selected]);
+
+  const selectRun = (runId: string) => {
+    setSelected(runId);
+    setActionError(null);
+    setEpoch((value) => value + 1);
+  };
+
+  const handleCreated = (runId: string) => {
+    selectRun(runId);
+    refreshRuns();
+  };
+
+  const handleCancel = async () => {
+    if (!selected) return;
+    setBusy(true);
+    setActionError(null);
+    try {
+      await cancelRun(selected);
+      await refreshRuns();
+      setEpoch((value) => value + 1);
+    } catch (err) {
+      setActionError(String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleResume = async (extraBudgetTokens: number) => {
+    if (!selected) return;
+    setBusy(true);
+    setActionError(null);
+    try {
+      await resumeRun(selected, extraBudgetTokens || undefined);
+      await refreshRuns();
+      setEpoch((value) => value + 1);
+    } catch (err) {
+      setActionError(String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
-    <div style={styles.page}>
-      <div style={styles.header}>
-        <strong>Super-Agent Orchestration Demo</strong>
-        {error ? (
-          <span style={styles.bad}>backend unreachable</span>
-        ) : health ? (
-          <span style={styles.ok}>backend ok</span>
+    <div
+      style={{
+        minHeight: "100vh",
+        background: colors.bg,
+        color: colors.text,
+        padding: 16,
+        fontFamily: "system-ui, Segoe UI, sans-serif",
+      }}
+    >
+      <header style={{ display: "flex", alignItems: "baseline", gap: 12, marginBottom: 12 }}>
+        <strong style={{ fontSize: 16 }}>Super-Agent Orchestration Demo</strong>
+        {health ? (
+          <span style={{ color: colors.green, fontSize: 12 }}>
+            backend ok · {health.model_main} / {health.model_sub} · fault injection{" "}
+            {health.failure_inject_mode}
+          </span>
         ) : (
-          <span style={styles.muted}>connecting...</span>
+          <span style={{ color: colors.red, fontSize: 12 }}>backend unreachable</span>
         )}
-      </div>
+        <span style={{ ...mutedStyle, fontSize: 12, marginLeft: "auto" }}>
+          supervisor plans at runtime · sub-agents have isolated context · artifacts are the only
+          channel back
+        </span>
+      </header>
 
-      <div style={styles.panel}>
-        <div>provider: {health?.provider ?? "-"}</div>
-        <div>supervisor model: {health?.model_main ?? "-"}</div>
-        <div>sub-agent model: {health?.model_sub ?? "-"}</div>
-        <div>fallback configured: {String(health?.fallback_configured ?? false)}</div>
-        {error ? <div style={styles.bad}>{error}</div> : null}
-      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "320px minmax(0, 1fr)", gap: 12 }}>
+        <aside>
+          <section style={panelStyle}>
+            <NewRunForm onCreated={handleCreated} />
+          </section>
+          <section style={panelStyle}>
+            <RunList runs={runs} selected={selected} onSelect={selectRun} />
+          </section>
+          <section style={panelStyle}>
+            <FaultControl />
+          </section>
+          <section style={panelStyle}>
+            <TickPanel />
+          </section>
+        </aside>
 
-      <TickPanel />
-
-      <div style={styles.panel}>
-        <div style={styles.muted}>tree / transcript / debug panels land in later commits</div>
+        <main>
+          <RunView
+            run={run}
+            streamState={streamState}
+            busy={busy}
+            actionError={actionError}
+            onCancel={handleCancel}
+            onResume={handleResume}
+            onReconnect={() => setEpoch((value) => value + 1)}
+          />
+          <section style={panelStyle}>
+            <div style={{ marginBottom: 8, fontWeight: 600 }}>Event transcript</div>
+            <EventLog events={events} />
+          </section>
+        </main>
       </div>
     </div>
   );

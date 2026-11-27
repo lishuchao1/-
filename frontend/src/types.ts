@@ -5,6 +5,7 @@ export type Health = {
   model_main: string;
   model_sub: string;
   fallback_configured: boolean;
+  failure_inject_mode: string;
 };
 
 export type AgentStatus =
@@ -28,6 +29,9 @@ export type AgentNode = {
   cost: number;
   latency_ms: number;
   steps: number;
+  summary: string;
+  error_kind: string;
+  artifact_keys: string[];
 };
 
 export type RunStatus =
@@ -48,12 +52,26 @@ export type RunSummary = {
   reserved_tokens: number;
   cost: number;
   elapsed_s: number;
+  max_depth: number;
+  max_concurrency: number;
   unverified: boolean;
   tokens_may_be_underreported: boolean;
   thinking_replay_broken: boolean;
   agents: AgentNode[];
   slots: ArtifactSlot[];
   final_answer: string;
+  budget_hard_stop: boolean;
+  debug: Record<string, unknown>;
+};
+
+export type RunListItem = {
+  run_id: string;
+  task: string;
+  status: RunStatus;
+  tokens_used: number;
+  cost: number;
+  agents: number;
+  created_at: number;
 };
 
 export type ArtifactSlot = {
@@ -62,6 +80,7 @@ export type ArtifactSlot = {
   status: "filled" | "missing";
   version: number;
   chars: number;
+  last_agent?: string;
 };
 
 export type RunEvent = {
@@ -86,3 +105,17 @@ export type TickEvent = {
   uptime_s: number;
   replayed?: boolean;
 };
+
+export type FailureMode = "off" | "transient" | "permanent" | "structural" | "task";
+
+export const TERMINAL_RUN_STATUSES: RunStatus[] = [
+  "done",
+  "failed",
+  "cancelled",
+  "interrupted",
+  "budget_exhausted",
+];
+
+export function isTerminal(status: RunStatus | undefined): boolean {
+  return status !== undefined && TERMINAL_RUN_STATUSES.includes(status);
+}
