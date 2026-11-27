@@ -68,6 +68,12 @@ export function BudgetBar({ run }: { run: RunSummary }) {
         {run.budget_hard_stop ? (
           <span style={{ color: colors.red }}> · hard stop reached</span>
         ) : null}
+        {over ? (
+          <span style={{ color: colors.red }}>
+            {" "}
+            · +{(run.tokens_used - run.budget_tokens).toLocaleString()} over budget from steps already in flight
+          </span>
+        ) : null}
       </div>
     </div>
   );
