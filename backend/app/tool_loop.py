@@ -55,7 +55,9 @@ async def run_tool_loop(
     tools: dict[str, ToolSpec],
     max_steps: int = 6,
     max_tokens: int | None = 900,
+    terminal_tools: frozenset[str] = frozenset(),
     on_step: Callable[[StepRecord], None] | None = None,
+    on_tool: Callable[[str, str, dict[str, Any], str], None] | None = None,
 ) -> LoopResult:
     total = Usage()
     steps: list[StepRecord] = []
@@ -63,6 +65,7 @@ async def run_tool_loop(
     content = ""
     finished = False
     stop_reason = "max_steps"
+    consecutive_invalid = 0
 
     for index in range(max_steps):
         result: LlmResult = await client.complete(
@@ -92,11 +95,27 @@ async def run_tool_loop(
             break
 
         messages.append(result.assistant_message())
+        terminal = False
         for call in result.tool_calls:
-            record.tools.append({"name": call.name, "arguments": call.arguments})
+            record.tools.append({"name": call.name, "arguments": call.arguments[:300]})
             payload, invalid = await _dispatch(tools, call.name, call.arguments)
             if invalid:
                 record.invalid_tool = invalid
+                consecutive_invalid += 1
+                if invalid == "invalid_arguments" and result.finish_reason == "length":
+                    payload = {
+                        "error": "invalid_arguments",
+                        "detail": (
+                            "arguments were cut off because the reply hit max_tokens; "
+                            "shorten the content field and call the tool again"
+                        ),
+                    }
+            else:
+                consecutive_invalid = 0
+            if on_tool:
+                on_tool(call.name, call.arguments, payload, invalid)
+            if call.name in terminal_tools:
+                terminal = True
             messages.append(
                 {
                     "role": "tool",
@@ -107,6 +126,15 @@ async def run_tool_loop(
         steps.append(record)
         if on_step:
             on_step(record)
+        if terminal:
+            finished = True
+            stop_reason = "finished_tool"
+            break
+        if consecutive_invalid >= 2:
+            content = "stuck: repeated invalid tool arguments; last response was not usable"
+            stop_reason = "stuck_invalid_tools"
+            logger.warning("stopping loop role=%s after repeated invalid tool calls", role)
+            break
 
     return LoopResult(
         content=content,

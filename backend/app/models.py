@@ -153,6 +153,7 @@ class RunState:
     next_event_id: int = 1
     final_answer: str = ""
     slots: dict[str, dict[str, Any]] = field(default_factory=dict)
+    artifact_contents: dict[str, str] = field(default_factory=dict, repr=False)
     flags: RunFlags = field(default_factory=RunFlags)
     debug: dict[str, Any] = field(default_factory=dict)
     cancel_event: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
