@@ -1,8 +1,9 @@
 import { colors, mutedStyle } from "./theme";
-import type { ArtifactSlot } from "./types";
+import { missingSlots, type ArtifactSlot } from "./types";
 
-export function SlotTable({ slots }: { slots: ArtifactSlot[] }) {
-  if (slots.length === 0) {
+export function SlotTable({ slots, showMissing }: { slots: ArtifactSlot[]; showMissing: boolean }) {
+  const missing = showMissing ? missingSlots(slots) : [];
+  if (slots.length === 0 && missing.length === 0) {
     return <div style={mutedStyle}>no artifacts written yet</div>;
   }
   return (
@@ -26,6 +27,15 @@ export function SlotTable({ slots }: { slots: ArtifactSlot[] }) {
             <td style={{ padding: "3px 6px" }}>v{slot.version}</td>
             <td style={{ padding: "3px 6px" }}>{slot.chars}</td>
             <td style={{ padding: "3px 6px", color: colors.muted }}>{slot.last_agent ?? "-"}</td>
+          </tr>
+        ))}
+        {missing.map((key) => (
+          <tr key={`missing-${key}`} style={{ borderTop: `1px solid ${colors.border}` }}>
+            <td style={{ padding: "3px 6px", color: colors.purple }}>{key}</td>
+            <td style={{ padding: "3px 6px", color: colors.red }}>[MISSING]</td>
+            <td style={{ padding: "3px 6px", color: colors.muted }}>-</td>
+            <td style={{ padding: "3px 6px", color: colors.muted }}>-</td>
+            <td style={{ padding: "3px 6px", color: colors.muted }}>-</td>
           </tr>
         ))}
       </tbody>

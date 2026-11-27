@@ -338,7 +338,7 @@ export function RunView({
 
         <section style={panelStyle}>
           <div style={{ marginBottom: 8, fontWeight: 600 }}>Artifacts</div>
-          <SlotTable slots={run.slots} />
+          <SlotTable slots={run.slots} showMissing={isTerminal(run.status)} />
         </section>
       </div>
 

@@ -1,5 +1,5 @@
 import { colors, statusColor, yuan } from "./theme";
-import type { RunSummary } from "./types";
+import { isTerminal, missingSlots, type RunSummary } from "./types";
 
 export function Pill({ label, color }: { label: string; color: string }) {
   return (
@@ -20,6 +20,7 @@ export function Pill({ label, color }: { label: string; color: string }) {
 
 export function FinalPanel({ run }: { run: RunSummary }) {
   const verdict = run.debug["review_verdict"];
+  const missing = isTerminal(run.status) ? missingSlots(run.slots) : [];
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
@@ -37,6 +38,9 @@ export function FinalPanel({ run }: { run: RunSummary }) {
         <Pill label={`${run.tokens_used.toLocaleString()} tokens`} color={colors.muted} />
         <Pill label={yuan(run.cost)} color={colors.muted} />
       </div>
+      {missing.length > 0 ? (
+        <div style={{ fontSize: 12, color: colors.red }}>[MISSING] {missing.join(" · ")}</div>
+      ) : null}
       <pre
         style={{
           margin: 0,

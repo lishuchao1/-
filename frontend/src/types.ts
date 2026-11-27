@@ -141,3 +141,17 @@ export const TERMINAL_RUN_STATUSES: RunStatus[] = [
 export function isTerminal(status: RunStatus | undefined): boolean {
   return status !== undefined && TERMINAL_RUN_STATUSES.includes(status);
 }
+
+export function missingSlots(slots: ArtifactSlot[]): string[] {
+  const missing: string[] = [];
+  if (!slots.some((slot) => slot.key.startsWith("writer."))) {
+    missing.push("writer.*");
+  }
+  if (!slots.some((slot) => slot.key.startsWith("marketing."))) {
+    missing.push("marketing.*");
+  }
+  if (!slots.some((slot) => slot.key === "reviewer.verdict")) {
+    missing.push("reviewer.verdict");
+  }
+  return missing;
+}
