@@ -116,7 +116,29 @@ python -m pytest backend/tests -q
 The suite is fully offline (scripted fake model): budget ledger invariants, soft/hard limits,
 depth-scoped tools, dedupe, cancellation, agent cap, context isolation, token reconciliation,
 reservation exhaustion, artifact ownership, the review gate, unknown tools, structural and task
-400 handling, reasoning replay, SSE replay/live dedupe, and checkpoint/resume. 38 tests.
+400 handling, reasoning replay, SSE replay/live dedupe, and checkpoint/resume. 41 tests.
+
+## Agent design
+
+**Supervisor prompt** (`backend/app/prompts.py`): the supervisor is told to plan at run time, not to
+follow a fixed pipeline. It knows the three roles, that every specialist only sees the assignment and
+the context string it passes, and the working rules: spawn with `spawn_agent`, spawn the reviewer only
+after drafts exist, at most one revision per rejection, read artifacts before answering, and call
+`finish` only with content it actually received. `skip_review(reason)` is the explicit escape hatch and
+marks the run unverified.
+
+**Sub-agent roles**:
+
+- `writer` writes user-facing drafts under `writer.*` keys.
+- `marketing` writes a go-to-market plan under `marketing.*` keys.
+- `reviewer` reads the named artifacts and writes `reviewer.verdict`, whose first line is `PASS` or
+  `REJECT`; REJECT must list the minimal fixes.
+
+Every sub-agent has its own message list (system prompt + assignment + supervisor context + its own
+tool round trips). Artifacts are the only channel back to the supervisor; role prefixes are enforced
+server-side. Tools are scoped by depth: a sub-agent at `max_depth` gets `write_artifact`,
+`read_artifact` and `finish` only, so it cannot spawn further agents. Supervisor-provided context is
+capped at `CONTEXT_MAX_CHARS` and visibly marked `[TRUNCATED]` when it does not fit.
 
 ## Design notes
 
@@ -136,6 +158,21 @@ reservation exhaustion, artifact ownership, the review gate, unknown tools, stru
 - **SSE contract**: the stream always starts with a full snapshot, replays events after
   `Last-Event-ID`, then follows live events, and ends with a final snapshot when the run reaches a
   terminal status. Clients deduplicate by event id.
+
+## Demo walkthrough
+
+1. `python dev.py`, open `http://127.0.0.1:5173/`, submit a task. The supervisor plans at run time;
+   writer and marketing usually appear in parallel, and the tree shows three roles within seconds.
+2. Click any node. The Conversation panel shows exactly what that agent saw: its system prompt,
+   assignment, supervisor-provided context, available tools, and every tool call/result. A sub-agent
+   at `max_depth` has no `spawn_agent` in its tool list.
+3. While a run is active, click "fail next agent". The next spawned sub-agent fails with
+   `injected_failure` without a model call; the supervisor retries or finishes and names the gap.
+4. In the same debug row, lower the budget and apply. The run hard-stops as `budget_exhausted`; the
+   artifact table shows every required slot as filled or `[MISSING]`.
+5. Set max depth to 1 before starting a run: sub-agents cannot spawn further agents.
+6. Click "cancel run" mid-flight: running nodes become `cancelled` within about a second and the run
+   is flagged `tokens_may_be_underreported`.
 
 ## Assumptions
 
