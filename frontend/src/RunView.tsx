@@ -331,6 +331,11 @@ export function RunView({
                 {selected.error_kind ? ` · ${selected.error_kind}` : ""}
               </div>
               <div style={mutedStyle}>task: {selected.task}</div>
+              {conversation?.available_tools?.length ? (
+                <div style={{ ...mutedStyle, fontSize: 12 }}>
+                  tools: {conversation.available_tools.join(" · ")}
+                </div>
+              ) : null}
               {selected.summary ? <div>summary: {selected.summary}</div> : null}
             </div>
           ) : null}

@@ -378,6 +378,7 @@ class RunExecutor:
             "finish": ToolSpec(FINISH_SUPERVISOR_SCHEMA, finish_handler),
             "skip_review": ToolSpec(SKIP_REVIEW_SCHEMA, skip_review_handler),
         }
+        root.available_tools = list(tools.keys())
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": SUPERVISOR_PROMPT},
             {"role": "user", "content": run.task},
@@ -697,6 +698,7 @@ class RunExecutor:
         }
         if agent.depth < run.max_depth:
             tools["spawn_agent"] = ToolSpec(SPAWN_SCHEMA, spawn_handler)
+        agent.available_tools = list(tools.keys())
 
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": ROLE_PROMPTS[agent.role]},

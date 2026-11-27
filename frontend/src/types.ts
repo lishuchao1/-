@@ -32,6 +32,7 @@ export type AgentNode = {
   summary: string;
   error_kind: string;
   artifact_keys: string[];
+  available_tools?: string[];
 };
 
 export type RunStatus =
@@ -102,6 +103,7 @@ export type AgentConversation = {
   role: string;
   status: AgentStatus;
   task: string;
+  available_tools?: string[];
   messages: ConversationMessage[];
 };
 

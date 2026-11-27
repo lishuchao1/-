@@ -86,7 +86,7 @@ key, and the exported AI session logs contain only `[REDACTED]` where a key was 
 | POST | `/api/runs` | create a run (`task`, optional `budget_tokens`, `max_depth`, `max_concurrency`) |
 | GET | `/api/runs` | list recent runs |
 | GET | `/api/runs/{id}` | full public run state |
-| GET | `/api/runs/{id}/agents/{agent_id}/conversation` | exact message list that agent saw (system prompt, assignment, tool calls/results) |
+| GET | `/api/runs/{id}/agents/{agent_id}/conversation` | exact messages and tool list that agent saw (system prompt, assignment, tool calls/results) |
 | GET | `/api/runs/{id}/stream` | SSE: snapshot, replay after `Last-Event-ID`, live tail, final snapshot |
 | POST | `/api/runs/{id}/cancel` | cancel a queued/running run |
 | POST | `/api/runs/{id}/resume` | resume with `extra_budget_tokens`; finished agents are reused |

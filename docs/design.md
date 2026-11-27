@@ -89,7 +89,7 @@ tokens_used + reserved_tokens + remaining == budget_tokens
 
 - 侧栏：新建 run（任务/预算/深度/并发）、run 列表、故障注入、tick 演示。
 - 主区：状态头（含取消/续跑/重连）、预算条、debug 字段、agent 树 + 选中详情、artifact 表（含 last writer）、最终答案（unverified 等标记）、可过滤事件转录。
-- 点击树节点打开该 agent 的 Conversation 面板：完整 system prompt、任务与 supervisor 提供的 context、每轮 assistant 文本/推理/tool_calls，以及 tool 结果；运行中的 agent 每 1.5s 刷新。转录随 checkpoint 落盘，重启后仍可查看。
+- 点击树节点打开该 agent 的 Conversation 面板：完整 system prompt、任务与 supervisor 提供的 context、**该 agent 实际可用的工具列表**、每轮 assistant 文本/推理/tool_calls，以及 tool 结果；运行中的 agent 每 1.5s 刷新。转录随 checkpoint 落盘，重启后仍可查看。深度达到 `max_depth` 的子 agent 工具表只有 `write_artifact` / `read_artifact` / `finish`，没有 `spawn_agent`。
 - 无 UI 框架，内联样式，`tsc --noEmit` 作为类型门。
 
 ## 9. 关键取舍

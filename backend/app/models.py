@@ -58,6 +58,7 @@ class AgentNode:
     summary: str = ""
     error_kind: str = ""
     artifact_keys: list[str] = field(default_factory=list)
+    available_tools: list[str] = field(default_factory=list)
     transcript: list[dict[str, Any]] = field(default_factory=list, repr=False)
 
     def public(self) -> dict[str, Any]:
@@ -76,6 +77,7 @@ class AgentNode:
             "summary": self.summary,
             "error_kind": self.error_kind,
             "artifact_keys": list(self.artifact_keys),
+            "available_tools": list(self.available_tools),
         }
 
     def checkpoint(self) -> dict[str, Any]:
@@ -100,6 +102,7 @@ class AgentNode:
             summary=str(raw.get("summary", "")),
             error_kind=str(raw.get("error_kind", "")),
             artifact_keys=list(raw.get("artifact_keys") or []),
+            available_tools=list(raw.get("available_tools") or []),
             transcript=list(raw.get("transcript") or []),
         )
 

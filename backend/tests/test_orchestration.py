@@ -142,6 +142,9 @@ async def test_worker_tools_follow_max_depth() -> None:
         worker_calls = [call for call in client.calls if call["role"] == "writer"]
         assert worker_calls, "writer never ran"
         assert ("spawn_agent" in worker_calls[0]["tools"]) is expect_spawn
+        worker = next(agent for agent in run.agent_list() if agent.depth > 0)
+        assert ("spawn_agent" in worker.available_tools) is expect_spawn
+        assert {"write_artifact", "read_artifact", "finish"} <= set(worker.available_tools)
 
 
 async def test_duplicate_spawn_reuses_previous_agent() -> None:

@@ -244,6 +244,7 @@ def get_agent_conversation(run_id: str, agent_id: str) -> dict[str, object]:
         "role": agent.role,
         "status": agent.status,
         "task": agent.task,
+        "available_tools": agent.available_tools,
         "messages": agent.transcript,
     }
 
