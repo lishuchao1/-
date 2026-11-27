@@ -62,6 +62,22 @@ export function resumeRun(
   );
 }
 
+export function patchDebug(
+  runId: string,
+  body: {
+    budget_tokens?: number;
+    max_depth?: number;
+    max_concurrency?: number;
+    fail_next?: boolean;
+  },
+): Promise<{ ok: boolean; fail_next: boolean }> {
+  return request(`/api/runs/${runId}/debug`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
 export function getFailureMode(): Promise<{ mode: FailureMode; remaining: number | null }> {
   return request("/api/debug/failures");
 }

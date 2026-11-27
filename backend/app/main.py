@@ -44,6 +44,13 @@ class ResumeBody(BaseModel):
     extra_budget_tokens: int | None = Field(default=None, ge=10_000, le=2_000_000)
 
 
+class DebugBody(BaseModel):
+    budget_tokens: int | None = Field(default=None, ge=10_000, le=2_000_000)
+    max_depth: int | None = Field(default=None, ge=0, le=3)
+    max_concurrency: int | None = Field(default=None, ge=1, le=6)
+    fail_next: bool | None = None
+
+
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.llm = LlmClient(settings)
@@ -149,6 +156,37 @@ async def cancel_run(run_id: str, request: Request) -> dict[str, object]:
         task.cancel()
     logger.info("cancel requested run_id=%s", run_id)
     return {"run_id": run_id, "status": "cancelling"}
+
+
+@app.patch("/api/runs/{run_id}/debug")
+def patch_run_debug(run_id: str, body: DebugBody) -> dict[str, object]:
+    run = store.get(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    if run.status not in ("queued", "running"):
+        raise HTTPException(status_code=409, detail=f"run is not active: {run.status}")
+    if body.budget_tokens is not None:
+        run.budget_tokens = body.budget_tokens
+    if body.max_depth is not None:
+        run.max_depth = body.max_depth
+    if body.max_concurrency is not None:
+        run.max_concurrency = body.max_concurrency
+    if body.fail_next is not None:
+        if body.fail_next:
+            run.debug["fail_next"] = True
+        else:
+            run.debug.pop("fail_next", None)
+    logger.info(
+        "debug patched run_id=%s budget=%s depth=%s concurrency=%s fail_next=%s",
+        run_id, run.budget_tokens, run.max_depth, run.max_concurrency, body.fail_next,
+    )
+    return {
+        "ok": True,
+        "budget_tokens": run.budget_tokens,
+        "max_depth": run.max_depth,
+        "max_concurrency": run.max_concurrency,
+        "fail_next": bool(run.debug.get("fail_next")),
+    }
 
 
 @app.get("/api/debug/failures")

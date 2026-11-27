@@ -620,6 +620,25 @@ class RunExecutor:
             summary=f"reserved {reserved} tokens",
             data={"reserved": reserved, "remaining": self.ledger.remaining},
         )
+        if run.debug.pop("fail_next", False):
+            child.status = "failed"
+            child.error_kind = "injected_failure"
+            self._settle_agent(child)
+            self.store.append(
+                run,
+                "agent_failed",
+                agent=child,
+                summary="next-agent failure injected from the debug panel",
+                data={"kind": "injected_failure"},
+            )
+            return {
+                "agent_id": child.id,
+                "role": role,
+                "status": "failed",
+                "error": "injected_failure",
+                "summary": "the next sub-agent was configured to fail",
+                "artifact_keys": [],
+            }
         result = await self._run_worker(child, context)
         result["budget_remaining"] = self.ledger.remaining
         return result

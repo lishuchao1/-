@@ -446,3 +446,28 @@ async def test_structural_error_marks_config_error() -> None:
     assert run.flags.thinking_replay_broken is True
     assert FailingClient.calls == 1
     assert run.final_answer.startswith("run failed: structural_400")
+
+async def test_fail_next_agent_marks_one_worker_failed() -> None:
+    store = RunStore()
+    run = make_run(store)
+    run.debug["fail_next"] = True
+    client = RecordingClient(
+        steps_script(
+            [
+                [
+                    tool("spawn_agent", {"role": "writer", "task": "draft one"}),
+                    tool("spawn_agent", {"role": "writer", "task": "draft two"}),
+                ],
+                [tool("skip_review", {"reason": "injected failure drill"})],
+                [tool("finish", {"final_answer": FINAL_ANSWER})],
+            ]
+        )
+    )
+    await execute_run(run, client, store)
+    workers = [agent for agent in run.agent_list() if agent.depth > 0]
+    failed = [agent for agent in workers if agent.status == "failed"]
+    assert len(failed) == 1
+    assert failed[0].error_kind == "injected_failure"
+    assert sum(1 for agent in workers if agent.status == "done") == 1
+    assert run.status == "done"
+    assert run.debug.get("fail_next") is None

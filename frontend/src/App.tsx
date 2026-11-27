@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { cancelRun, fetchHealth, listRuns, resumeRun } from "./api";
+import { cancelRun, fetchHealth, listRuns, patchDebug, resumeRun } from "./api";
 import { EventLog } from "./EventLog";
 import { RunView } from "./RunView";
 import { FaultControl, NewRunForm, RunList } from "./Sidebar";
@@ -63,6 +63,25 @@ export default function App() {
       await cancelRun(selected);
       await refreshRuns();
       setEpoch((value) => value + 1);
+    } catch (err) {
+      setActionError(String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handlePatchDebug = async (body: {
+    budget_tokens?: number;
+    max_depth?: number;
+    max_concurrency?: number;
+    fail_next?: boolean;
+  }) => {
+    if (!selected) return;
+    setBusy(true);
+    setActionError(null);
+    try {
+      await patchDebug(selected, body);
+      await refreshRuns();
     } catch (err) {
       setActionError(String(err));
     } finally {
@@ -136,6 +155,7 @@ export default function App() {
             onCancel={handleCancel}
             onResume={handleResume}
             onReconnect={() => setEpoch((value) => value + 1)}
+            onPatchDebug={handlePatchDebug}
           />
           <section style={panelStyle}>
             <div style={{ marginBottom: 8, fontWeight: 600 }}>Event transcript</div>

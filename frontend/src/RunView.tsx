@@ -7,6 +7,13 @@ import { colors, mutedStyle, panelStyle, statusColor } from "./theme";
 import { isTerminal, type RunSummary } from "./types";
 import type { StreamState } from "./useRunStream";
 
+type DebugPatch = {
+  budget_tokens?: number;
+  max_depth?: number;
+  max_concurrency?: number;
+  fail_next?: boolean;
+};
+
 type RunViewProps = {
   run: RunSummary | null;
   streamState: StreamState;
@@ -15,7 +22,18 @@ type RunViewProps = {
   onCancel: () => void;
   onResume: (extraBudgetTokens: number) => void;
   onReconnect: () => void;
+  onPatchDebug: (body: DebugPatch) => Promise<void>;
 };
+
+const numberStyle = {
+  width: 84,
+  background: colors.bg,
+  border: `1px solid ${colors.border}`,
+  borderRadius: 6,
+  color: colors.text,
+  padding: "3px 6px",
+  fontSize: 12,
+} as const;
 
 const buttonStyle = {
   background: colors.panelAlt,
@@ -35,12 +53,19 @@ export function RunView({
   onCancel,
   onResume,
   onReconnect,
+  onPatchDebug,
 }: RunViewProps) {
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
   const [extraBudget, setExtraBudget] = useState(20000);
+  const [debugBudget, setDebugBudget] = useState(0);
+  const [debugDepth, setDebugDepth] = useState(0);
+  const [debugConcurrency, setDebugConcurrency] = useState(1);
 
   useEffect(() => {
     setSelectedAgent(null);
+    setDebugBudget(run?.budget_tokens ?? 0);
+    setDebugDepth(run?.max_depth ?? 0);
+    setDebugConcurrency(run?.max_concurrency ?? 1);
   }, [run?.run_id]);
 
   if (!run) {
@@ -105,6 +130,77 @@ export function RunView({
         </div>
         <div style={{ ...mutedStyle, fontSize: 12, margin: "6px 0 10px" }}>{run.task}</div>
         <BudgetBar run={run} />
+        {active ? (
+          <div
+            style={{
+              display: "flex",
+              gap: 8,
+              alignItems: "center",
+              flexWrap: "wrap",
+              fontSize: 12,
+              marginTop: 8,
+            }}
+          >
+            <span style={mutedStyle}>debug:</span>
+            <label style={{ display: "flex", gap: 4, alignItems: "center" }}>
+              budget
+              <input
+                type="number"
+                min={10000}
+                step={10000}
+                value={debugBudget}
+                onChange={(event) => setDebugBudget(Number(event.target.value))}
+                style={numberStyle}
+              />
+            </label>
+            <label style={{ display: "flex", gap: 4, alignItems: "center" }}>
+              depth
+              <input
+                type="number"
+                min={0}
+                max={3}
+                value={debugDepth}
+                onChange={(event) => setDebugDepth(Number(event.target.value))}
+                style={numberStyle}
+              />
+            </label>
+            <label style={{ display: "flex", gap: 4, alignItems: "center" }}>
+              concurrency
+              <input
+                type="number"
+                min={1}
+                max={6}
+                value={debugConcurrency}
+                onChange={(event) => setDebugConcurrency(Number(event.target.value))}
+                style={numberStyle}
+              />
+            </label>
+            <button
+              style={{ ...buttonStyle, padding: "1px 8px", fontSize: 11 }}
+              disabled={busy}
+              onClick={() =>
+                onPatchDebug({
+                  budget_tokens: debugBudget,
+                  max_depth: debugDepth,
+                  max_concurrency: debugConcurrency,
+                })
+              }
+            >
+              apply
+            </button>
+            <button
+              style={{ ...buttonStyle, padding: "1px 8px", fontSize: 11 }}
+              disabled={busy}
+              title="the next spawned sub-agent fails right after spawn"
+              onClick={() => onPatchDebug({ fail_next: true })}
+            >
+              fail next agent
+            </button>
+            {run.debug["fail_next"] ? (
+              <span style={{ color: colors.amber }}>failure armed</span>
+            ) : null}
+          </div>
+        ) : null}
         {actionError ? (
           <div style={{ color: colors.red, fontSize: 12, marginTop: 8 }}>{actionError}</div>
         ) : null}
