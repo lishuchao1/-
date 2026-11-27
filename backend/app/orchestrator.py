@@ -291,8 +291,17 @@ class RunExecutor:
         self.store.append(run, "agent_started", agent=root, summary="supervisor started")
 
         def finish_handler(args: dict[str, Any]) -> dict[str, Any]:
-            self.final_answer = str(args.get("final_answer", "")).strip()
-            return {"ok": True, "received_chars": len(self.final_answer)}
+            final = str(args.get("final_answer", "")).strip()
+            if len(final) < 20:
+                return {
+                    "error": "final_answer_too_short",
+                    "detail": (
+                        "write the actual answer for the user (at least 20 characters), "
+                        "then call finish again"
+                    ),
+                }
+            self.final_answer = final
+            return {"ok": True, "chars": len(final)}
 
         def read_handler(args: dict[str, Any]) -> dict[str, Any]:
             try:
@@ -492,6 +501,26 @@ class RunExecutor:
             )
             return {"error": "agent_cap", "detail": f"max {MAX_WORKERS} sub-agents per run"}
 
+        rejections = sum(1 for event in run.events if event.kind == "review_rejected")
+        revisions = sum(
+            1
+            for event in run.events
+            if event.kind == "agent_spawned" and event.data.get("after_reject")
+        )
+        after_reject = rejections > revisions
+        if rejections > 0 and role in ("writer", "marketing") and revisions >= rejections:
+            self.store.append(
+                run, "limit_reached", agent=parent, summary="revision cap reached",
+                data={"limit": "revision", "rejections": rejections, "revisions": revisions},
+            )
+            return {
+                "error": "revision_cap",
+                "detail": (
+                    "one revision per rejection was already dispatched; finish with the current "
+                    "artifacts or explain the remaining issues in the final answer"
+                ),
+            }
+
         child = self.store.add_agent(
             run, role=role, task=task, parent_id=parent.id, depth=parent.depth + 1
         )
@@ -519,7 +548,12 @@ class RunExecutor:
             }
         self.store.append(
             run, "agent_spawned", agent=child, summary=_clip(task, 160),
-            data={"role": role, "parent": parent.id, "reserved_tokens": reserved},
+            data={
+                "role": role,
+                "parent": parent.id,
+                "reserved_tokens": reserved,
+                "after_reject": after_reject,
+            },
         )
         self.store.append(
             run, "budget_reserved", agent=child,
@@ -539,11 +573,14 @@ class RunExecutor:
 
         def write_handler(args: dict[str, Any]) -> dict[str, Any]:
             try:
-                return write_artifact(
+                payload = write_artifact(
                     self.store, run, agent, str(args.get("key", "")), str(args.get("content", ""))
                 )
             except ArtifactError as error:
                 return {"error": error.code, "detail": error.detail}
+            if payload.get("key") == "reviewer.verdict":
+                self._record_review(agent, payload)
+            return payload
 
         def read_handler(args: dict[str, Any]) -> dict[str, Any]:
             try:
@@ -552,7 +589,13 @@ class RunExecutor:
                 return {"error": error.code, "detail": error.detail}
 
         def finish_handler(args: dict[str, Any]) -> dict[str, Any]:
-            summary_box["summary"] = str(args.get("summary", "")).strip()
+            summary = str(args.get("summary", "")).strip()
+            if not summary:
+                return {
+                    "error": "summary_required",
+                    "detail": "summarize what you produced, then call finish again",
+                }
+            summary_box["summary"] = summary
             return {"ok": True}
 
         async def spawn_handler(args: dict[str, Any]) -> dict[str, Any]:
@@ -643,6 +686,29 @@ class RunExecutor:
             },
         )
         return refunded
+
+    def _record_review(self, agent: AgentNode, payload: dict[str, Any]) -> None:
+        run = self.run
+        verdict = verdict_of(run)
+        if not verdict:
+            self.store.append(
+                run,
+                "invalid_tool_call",
+                agent=agent,
+                summary="reviewer.verdict must start with PASS or REJECT",
+                data={"name": "write_artifact", "reason": "unparseable_verdict"},
+            )
+            return
+        version = payload.get("version", 1)
+        run.debug["review_verdict"] = verdict
+        kind = "review_passed" if verdict == "PASS" else "review_rejected"
+        self.store.append(
+            run,
+            kind,
+            agent=agent,
+            summary=f"reviewer verdict {verdict} (v{version})",
+            data={"verdict": verdict, "version": version},
+        )
 
     def _on_worker_step(self, agent: AgentNode, step: StepRecord) -> None:
         agent.steps += 1

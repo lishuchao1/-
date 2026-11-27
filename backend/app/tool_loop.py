@@ -131,7 +131,7 @@ async def run_tool_loop(
                 consecutive_invalid = 0
             if on_tool:
                 on_tool(call.name, call.arguments, payload, invalid)
-            if call.name in terminal_tools:
+            if call.name in terminal_tools and not payload.get("error"):
                 terminal = True
             messages.append(
                 {
