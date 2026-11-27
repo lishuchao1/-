@@ -87,12 +87,89 @@ async def tools() -> int:
         await client.aclose()
 
 
+async def thinking() -> int:
+    from dataclasses import replace
+
+    cfg = replace(settings, thinking_main=True)
+    client = LlmClient(cfg)
+    messages: list[dict[str, object]] = [
+        {"role": "user", "content": "Call echo_note once with note='thinking-ok'. No prose."}
+    ]
+    try:
+        first = await client.complete(messages, role="main", tools=TOOL, max_tokens=256)
+        print(f"tool_calls={[(c.name, c.arguments) for c in first.tool_calls]}")
+        print(f"reasoning_len={len(first.reasoning_content)} finish={first.finish_reason}")
+        if not first.tool_calls:
+            print("no tool call returned")
+            return 2
+        call = first.tool_calls[0]
+
+        with_reasoning = list(messages)
+        with_reasoning.append(first.assistant_message())
+        with_reasoning.append({"role": "tool", "tool_call_id": call.id, "content": "{\"ok\": true}"})
+        try:
+            second = await client.complete(with_reasoning, role="main", tools=TOOL, max_tokens=256)
+            print(f"echo_reasoning=accepted finish={second.finish_reason}")
+        except LlmError as error:
+            print(f"echo_reasoning=rejected kind={error.kind} status={error.status} {str(error)[:160]}")
+
+        without_reasoning = list(messages)
+        bare = first.assistant_message()
+        bare.pop("reasoning_content", None)
+        without_reasoning.append(bare)
+        without_reasoning.append({"role": "tool", "tool_call_id": call.id, "content": "{\"ok\": true}"})
+        try:
+            await client.complete(without_reasoning, role="main", tools=TOOL, max_tokens=256)
+            print("missing_reasoning=accepted")
+        except LlmError as error:
+            print(f"missing_reasoning=rejected kind={error.kind} status={error.status} {str(error)[:160]}")
+        return 0
+    except LlmError as error:
+        print(f"llm_error kind={error.kind} status={error.status} message={str(error)[:300]}")
+        return 2
+    finally:
+        await client.aclose()
+
+
+async def loop() -> int:
+    from app.tool_loop import ToolSpec, run_tool_loop
+
+    client = LlmClient(settings)
+    seen: list[str] = []
+
+    async def echo_note(args: dict[str, object]) -> dict[str, object]:
+        seen.append(str(args.get("note", "")))
+        return {"stored": True, "value": args.get("note", "")}
+
+    tools = {"echo_note": ToolSpec(schema=TOOL[0], handler=echo_note)}
+    messages = [
+        {"role": "user", "content": "Call echo_note with note='loop-ok', then reply with the stored value."}
+    ]
+    try:
+        result = await run_tool_loop(client, role="main", messages=messages, tools=tools, max_steps=3)
+        print(f"finished={result.finished} stop={result.stop_reason} steps={len(result.steps)}")
+        for step in result.steps:
+            print(f"step={step.index} tools={step.tools} content={step.content.strip()[:80]!r}")
+        print(f"handler_seen={seen}")
+        print(f"tokens_in={result.usage.tokens_in} tokens_out={result.usage.tokens_out} cost={result.usage.cost}")
+        return 0 if result.finished and seen else 2
+    except LlmError as error:
+        print(f"llm_error kind={error.kind} status={error.status} message={str(error)[:300]}")
+        return 2
+    finally:
+        await client.aclose()
+
+
 def main() -> int:
     mode = sys.argv[1] if len(sys.argv) > 1 else "plain"
     if mode == "plain":
         return asyncio.run(plain())
     if mode == "tools":
         return asyncio.run(tools())
+    if mode == "thinking":
+        return asyncio.run(thinking())
+    if mode == "loop":
+        return asyncio.run(loop())
     print(f"unknown mode: {mode}")
     return 1
 
