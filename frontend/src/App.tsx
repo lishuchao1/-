@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { fetchHealth } from "./api";
+import TickPanel from "./TickPanel";
 import type { Health } from "./types";
 
 const styles = {
@@ -47,8 +48,10 @@ export default function App() {
         {error ? <div style={styles.bad}>{error}</div> : null}
       </div>
 
+      <TickPanel />
+
       <div style={styles.panel}>
-        <div style={styles.muted}>stream / tree / transcript / debug panels land in later commits</div>
+        <div style={styles.muted}>tree / transcript / debug panels land in later commits</div>
       </div>
     </div>
   );

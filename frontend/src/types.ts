@@ -79,3 +79,10 @@ export type RunEvent = {
   latency_ms?: number;
   data?: Record<string, unknown>;
 };
+
+export type TickEvent = {
+  seq: number;
+  ts: number;
+  uptime_s: number;
+  replayed?: boolean;
+};
