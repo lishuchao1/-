@@ -288,6 +288,34 @@ async def test_worker_context_is_isolated() -> None:
     assert WRITER_PROMPT not in root_text
 
 
+async def test_long_supervisor_context_is_truncated_with_marker() -> None:
+    from app.config import settings
+
+    store = RunStore()
+    run = make_run(store)
+    limit = settings.context_max_chars
+    client = RecordingClient(
+        steps_script(
+            [
+                [
+                    tool(
+                        "spawn_agent",
+                        {"role": "writer", "task": "draft long", "context": "Z" * (limit + 500)},
+                    )
+                ],
+                [tool("skip_review", {"reason": "truncation test"})],
+                [tool("finish", {"final_answer": FINAL_ANSWER})],
+            ]
+        )
+    )
+    await execute_run(run, client, store)
+    worker = next(agent for agent in run.agent_list() if agent.depth > 0)
+    brief = worker.transcript[1]["content"]
+    assert brief.count("Z") == limit
+    assert "[TRUNCATED]" in brief
+    assert "500 chars" in brief
+
+
 async def test_transcript_survives_checkpoint_roundtrip() -> None:
     store = RunStore()
     run = make_run(store)

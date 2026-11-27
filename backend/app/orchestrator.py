@@ -520,7 +520,16 @@ class RunExecutor:
         run = self.run
         role = str(args.get("role", "")).strip()
         task = str(args.get("task", "")).strip()
-        context = str(args.get("context", "") or "")[: settings.context_max_chars]
+        raw_context = str(args.get("context", "") or "")
+        limit = settings.context_max_chars
+        if len(raw_context) > limit:
+            omitted = len(raw_context) - limit
+            context = (
+                raw_context[:limit]
+                + f"\n[TRUNCATED] {omitted} chars of the supervisor-provided context were dropped"
+            )
+        else:
+            context = raw_context
 
         if role not in ROLE_PROMPTS:
             return {"error": "invalid_role", "detail": f"role must be one of {sorted(ROLE_PROMPTS)}"}

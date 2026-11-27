@@ -29,7 +29,7 @@
 ## 3. 一次 run 的生命周期
 
 1. `POST /api/runs` 创建 `RunState`，`_launch` 起异步任务执行 `execute_run`。
-2. supervisor 用 `spawn_agent(role, task, context)` 派活。并行工具调用通过 `asyncio.gather` fan-out；每个 spawn 在派发前先 `reserve` 预算。
+2. supervisor 用 `spawn_agent(role, task, context)` 派活。并行工具调用通过 `asyncio.gather` fan-out；每个 spawn 在派发前先 `reserve` 预算。supervisor 提供的 context 超过 `CONTEXT_MAX_CHARS` 时截断并附加 `[TRUNCATED]` 标记；worker 只能看到自己的 system prompt、任务与这段 context，看不到 supervisor 会话或兄弟 agent。
 3. worker 在自己的工具循环里 `write_artifact` / `read_artifact` / `finish(summary)`；完成后结算预算（退还未用部分）。
 4. supervisor 视需要 `read_artifact` 读回内容，或请求修订；`finish(final_answer)` 收尾。
 5. 校验：最终答案 ≥20 字符；**至少一次 reviewer verdict 或显式 `skip_review(reason)`**，否则第一次 finish 返回 `review_not_completed` 并记录 `finish_blocked`，第二次放行并标 `unverified=true`。
@@ -102,6 +102,6 @@ tokens_used + reserved_tokens + remaining == budget_tokens
 
 ## 10. 测试
 
-`backend/tests` 全部离线（假模型），40 条覆盖：预算账本不变量、软/硬限、深度工具表、去重、取消与少记标记、12 agent 上限、上下文隔离（含每个 agent 的转录内容与 checkpoint 往返）、token 对账、预留耗尽 → partial、越权写入、评审门/skip_review、未知工具、结构 400、任务 400 收窄重试、可重试重试次数、reasoning 回传、SSE 补发/实时/去重、checkpoint 往返与 resume 复用。
+`backend/tests` 全部离线（假模型），41 条覆盖：预算账本不变量、软/硬限、深度工具表、去重、取消与少记标记、12 agent 上限、上下文隔离（含每个 agent 的转录内容、超长 context 的 `[TRUNCATED]` 标记与 checkpoint 往返）、token 对账、预留耗尽 → partial、越权写入、评审门/skip_review、未知工具、结构 400、任务 400 收窄重试、可重试重试次数、reasoning 回传、SSE 补发/实时/去重、checkpoint 往返与 resume 复用。
 
 真实模型的验证只通过少量探针和小 run 完成，原始记录在 `ai-logs/`。

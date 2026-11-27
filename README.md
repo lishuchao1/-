@@ -11,6 +11,7 @@ Backend: Python 3.12 + FastAPI + httpx (async). Frontend: Vite + TypeScript + Re
 
 - [x] Supervisor plans at run time through tool calls; no hardcoded pipeline
 - [x] Isolated sub-agents (`writer`, `marketing`, `reviewer`) with role-scoped tools and artifacts
+- [x] Supervisor context capped at `CONTEXT_MAX_CHARS` with a visible `[TRUNCATED]` marker
 - [x] Parallel dispatch, depth cap, agent cap and duplicate-task reuse
 - [x] Token budget ledger with reservations, soft limit and hard stop
 - [x] Reviewer verdict events, revision cap and a finish gate (`skip_review` escape hatch)
@@ -19,7 +20,7 @@ Backend: Python 3.12 + FastAPI + httpx (async). Frontend: Vite + TypeScript + Re
 - [x] Run event stream with snapshot and `Last-Event-ID` replay
 - [x] Dashboard: agent tree, budget bar, artifacts, event transcript, final answer, fault injection
 - [x] Click-to-inspect per-agent conversation (system prompt, assignment, context, tool round trips)
-- [x] Offline pytest suite (fake model, 40 tests)
+- [x] Offline pytest suite (fake model, 41 tests)
 
 ## Reading order
 
