@@ -58,6 +58,7 @@ async def run_tool_loop(
     max_tokens: int | None = 900,
     terminal_tools: frozenset[str] = frozenset(),
     parallel_tools: frozenset[str] = frozenset(),
+    budget_guard: Callable[[], bool] | None = None,
     on_step: Callable[[StepRecord], None] | None = None,
     on_tool: Callable[[str, str, dict[str, Any], str], None] | None = None,
 ) -> LoopResult:
@@ -70,6 +71,10 @@ async def run_tool_loop(
     consecutive_invalid = 0
 
     for index in range(max_steps):
+        if budget_guard is not None and not budget_guard():
+            stop_reason = "budget_exhausted"
+            content = content or "stopped: token budget exhausted"
+            break
         result: LlmResult = await client.complete(
             messages,
             role=role,

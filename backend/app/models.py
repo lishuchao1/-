@@ -154,6 +154,9 @@ class RunState:
     final_answer: str = ""
     slots: dict[str, dict[str, Any]] = field(default_factory=dict)
     artifact_contents: dict[str, str] = field(default_factory=dict, repr=False)
+    reservations: dict[str, int] = field(default_factory=dict)
+    budget_soft_reported: bool = False
+    budget_hard_stop: bool = False
     flags: RunFlags = field(default_factory=RunFlags)
     debug: dict[str, Any] = field(default_factory=dict)
     cancel_event: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
@@ -187,5 +190,6 @@ class RunState:
             "agents": [agent.public() for agent in self.agent_list()],
             "slots": self.slot_list(),
             "final_answer": self.final_answer,
+            "budget_hard_stop": self.budget_hard_stop,
             "debug": {key: value for key, value in self.debug.items() if not key.startswith("_")},
         }

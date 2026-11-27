@@ -14,6 +14,7 @@ import time
 from typing import Any
 
 from .artifacts import ArtifactError, read_artifact, required_slots, verdict_of, write_artifact
+from .budget import BudgetLedger
 from .config import settings
 from .llm import LlmClient, LlmError
 from .models import AgentNode, RunState
@@ -114,8 +115,10 @@ class RunExecutor:
         self.run = run
         self.client = client
         self.store = store
+        self.ledger = BudgetLedger(run, settings.budget_reserve_tokens)
         self.final_answer = ""
         self.worker_summaries: dict[str, str] = {}
+        self._budget_exhausted_reported = False
 
     async def execute(self) -> None:
         run = self.run
@@ -125,7 +128,13 @@ class RunExecutor:
         root = self.store.add_agent(run, role="supervisor", task=run.task, parent_id=None, depth=0)
         try:
             await self._supervise(root)
-            run.status = "done" if run.final_answer else "failed"
+            if run.budget_hard_stop:
+                run.status = "budget_exhausted"
+                run.flags.unverified = True
+            elif run.final_answer:
+                run.status = "done"
+            else:
+                run.status = "failed"
         except LlmError as error:
             run.status = "failed"
             run.final_answer = f"run failed: {error.kind}: {_clip(str(error), 300)}"
@@ -199,11 +208,10 @@ class RunExecutor:
             max_tokens=2000,
             terminal_tools=frozenset({"finish"}),
             parallel_tools=frozenset({"spawn_agent"}),
+            budget_guard=self._budget_guard,
             on_step=lambda step: self._on_supervisor_step(root, step),
             on_tool=lambda name, args, payload, invalid: self._on_tool(root, name, args, payload, invalid),
         )
-        self._account(root, result)
-
         missing = [name for name, present in required_slots(run).items() if not present]
         if missing:
             run.flags.unverified = True
@@ -234,6 +242,7 @@ class RunExecutor:
 
     def _on_supervisor_step(self, root: AgentNode, step: StepRecord) -> None:
         root.steps += 1
+        self._charge_step(root, step)
         self.store.append(
             self.run,
             "agent_step",
@@ -276,12 +285,45 @@ class RunExecutor:
             data={"name": name},
         )
 
-    def _account(self, agent: AgentNode, result: Any) -> None:
-        agent.tokens_in += result.usage.tokens_in
-        agent.tokens_out += result.usage.tokens_out
-        agent.cost = round(agent.cost + result.usage.cost, 8)
-        self.run.tokens_used += result.usage.tokens_in + result.usage.tokens_out
-        self.run.cost = round(self.run.cost + result.usage.cost, 8)
+    def _charge_step(self, agent: AgentNode, step: StepRecord) -> None:
+        run = self.run
+        price_in, price_out = settings.price_for(agent.role)
+        cost = step.tokens_in / 1e6 * price_in + step.tokens_out / 1e6 * price_out
+        agent.tokens_in += step.tokens_in
+        agent.tokens_out += step.tokens_out
+        agent.cost = round(agent.cost + cost, 8)
+        run.cost = round(run.cost + cost, 8)
+        self.ledger.charge(agent.id, step.tokens_in + step.tokens_out)
+        if self.ledger.soft_limit_reached() and not run.budget_soft_reported:
+            run.budget_soft_reported = True
+            self.store.append(
+                run,
+                "budget_soft_limit",
+                agent=agent,
+                summary=f"consumed {run.tokens_used}/{run.budget_tokens} tokens",
+                data={"budget_tokens": run.budget_tokens, "tokens_used": run.tokens_used},
+            )
+        if self.ledger.exhausted:
+            self._emit_budget_exhausted(agent)
+
+    def _budget_guard(self) -> bool:
+        if self.ledger.exhausted:
+            self._emit_budget_exhausted()
+            return False
+        return True
+
+    def _emit_budget_exhausted(self, agent: AgentNode | None = None) -> None:
+        if self._budget_exhausted_reported:
+            return
+        self._budget_exhausted_reported = True
+        self.run.budget_hard_stop = True
+        self.store.append(
+            self.run,
+            "budget_exhausted",
+            agent=agent,
+            summary=f"budget {self.run.budget_tokens} tokens exhausted",
+            data={"tokens_used": self.run.tokens_used, "reserved": self.run.reserved_tokens},
+        )
 
     async def _spawn(self, parent: AgentNode, args: dict[str, Any]) -> dict[str, Any]:
         run = self.run
@@ -310,11 +352,40 @@ class RunExecutor:
         child = self.store.add_agent(
             run, role=role, task=task, parent_id=parent.id, depth=parent.depth + 1
         )
+        reserved = self.ledger.reserve(child.id)
+        if reserved is None:
+            child.status = "failed"
+            if self.ledger.exhausted:
+                child.error_kind = "budget_exhausted"
+                self._emit_budget_exhausted(child)
+                return {
+                    "error": "budget_exhausted",
+                    "detail": "token budget is exhausted; finish with what you have",
+                    "budget_remaining": 0,
+                }
+            child.error_kind = "budget_unavailable"
+            self.store.append(
+                run, "limit_reached", agent=child,
+                summary="budget fully reserved by running agents",
+                data={"limit": "budget_reserved", "reserved": run.reserved_tokens},
+            )
+            return {
+                "error": "budget_unavailable",
+                "detail": "remaining budget is currently reserved by running agents; retry later or finish",
+                "budget_remaining": self.ledger.remaining,
+            }
         self.store.append(
             run, "agent_spawned", agent=child, summary=_clip(task, 160),
-            data={"role": role, "parent": parent.id},
+            data={"role": role, "parent": parent.id, "reserved_tokens": reserved},
         )
-        return await self._run_worker(child, context)
+        self.store.append(
+            run, "budget_reserved", agent=child,
+            summary=f"reserved {reserved} tokens",
+            data={"reserved": reserved, "remaining": self.ledger.remaining},
+        )
+        result = await self._run_worker(child, context)
+        result["budget_remaining"] = self.ledger.remaining
+        return result
 
     async def _run_worker(self, agent: AgentNode, context: str) -> dict[str, Any]:
         run = self.run
@@ -366,6 +437,7 @@ class RunExecutor:
                 max_tokens=1800,
                 terminal_tools=frozenset({"finish"}),
                 parallel_tools=frozenset({"spawn_agent"}),
+                budget_guard=self._budget_guard,
                 on_step=lambda step: self._on_worker_step(agent, step),
                 on_tool=lambda name, args, payload, invalid: self._on_tool(agent, name, args, payload, invalid),
             )
@@ -380,21 +452,26 @@ class RunExecutor:
                 summary=f"{error.kind}: {_clip(str(error), 200)}",
                 data={"kind": error.kind},
             )
+            self._settle_agent(agent)
             return {"agent_id": agent.id, "status": agent.status, "error": error.kind,
                     "summary": _clip(str(error), 300), "artifact_keys": list(agent.artifact_keys)}
+        except asyncio.CancelledError:
+            agent.status = "cancelled"
+            self._settle_agent(agent)
+            raise
 
-        self._account(agent, result)
         agent.latency_ms += int((time.perf_counter() - started) * 1000)
         agent.summary = _clip(summary_box.get("summary") or result.content, MAX_SUMMARY_CHARS)
         agent.status = "done" if result.stop_reason == "finished_tool" else "partial"
         if agent.status == "partial":
             run.flags.unverified = True
         self.worker_summaries[agent.id] = agent.summary
+        refunded = self._settle_agent(agent)
         self.store.append(
             run, "agent_finished", agent=agent, summary=agent.summary,
             tokens_in=agent.tokens_in, tokens_out=agent.tokens_out, cost=agent.cost,
             latency_ms=agent.latency_ms,
-            data={"status": agent.status, "stop_reason": result.stop_reason},
+            data={"status": agent.status, "stop_reason": result.stop_reason, "refunded": refunded},
         )
         return {
             "agent_id": agent.id,
@@ -404,8 +481,24 @@ class RunExecutor:
             "artifact_keys": list(agent.artifact_keys),
         }
 
+    def _settle_agent(self, agent: AgentNode) -> int:
+        refunded = self.ledger.release(agent.id)
+        self.store.append(
+            self.run,
+            "budget_settled",
+            agent=agent,
+            summary=f"used {agent.tokens_in + agent.tokens_out} tokens, refunded {refunded}",
+            data={
+                "actual_tokens": agent.tokens_in + agent.tokens_out,
+                "refunded": refunded,
+                "remaining": self.ledger.remaining,
+            },
+        )
+        return refunded
+
     def _on_worker_step(self, agent: AgentNode, step: StepRecord) -> None:
         agent.steps += 1
+        self._charge_step(agent, step)
         self.store.append(
             self.run,
             "agent_step",
