@@ -77,6 +77,25 @@ class AgentNode:
             "artifact_keys": list(self.artifact_keys),
         }
 
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> "AgentNode":
+        return cls(
+            id=str(raw.get("id", "")),
+            role=str(raw.get("role", "")),
+            task=str(raw.get("task", "")),
+            parent_id=raw.get("parent_id"),
+            depth=int(raw.get("depth", 0)),
+            status=str(raw.get("status", "queued")),
+            tokens_in=int(raw.get("tokens_in", 0)),
+            tokens_out=int(raw.get("tokens_out", 0)),
+            cost=float(raw.get("cost", 0.0)),
+            latency_ms=int(raw.get("latency_ms", 0)),
+            steps=int(raw.get("steps", 0)),
+            summary=str(raw.get("summary", "")),
+            error_kind=str(raw.get("error_kind", "")),
+            artifact_keys=list(raw.get("artifact_keys") or []),
+        )
+
 
 @dataclass
 class RunEvent:
@@ -193,3 +212,63 @@ class RunState:
             "budget_hard_stop": self.budget_hard_stop,
             "debug": {key: value for key, value in self.debug.items() if not key.startswith("_")},
         }
+
+    def to_checkpoint(self) -> dict[str, Any]:
+        return {
+            "version": 1,
+            "run_id": self.run_id,
+            "task": self.task,
+            "budget_tokens": self.budget_tokens,
+            "max_depth": self.max_depth,
+            "max_concurrency": self.max_concurrency,
+            "status": self.status,
+            "tokens_used": self.tokens_used,
+            "reserved_tokens": self.reserved_tokens,
+            "cost": self.cost,
+            "created_at": self.created_at,
+            "started_at": self.started_at,
+            "ended_at": self.ended_at,
+            "agents": [agent.public() for agent in self.agent_list()],
+            "events": [event.to_dict() for event in self.events],
+            "next_event_id": self.next_event_id,
+            "final_answer": self.final_answer,
+            "slots": self.slots,
+            "artifact_contents": self.artifact_contents,
+            "reservations": self.reservations,
+            "budget_soft_reported": self.budget_soft_reported,
+            "budget_hard_stop": self.budget_hard_stop,
+            "flags": self.flags.to_dict(),
+            "debug": {key: value for key, value in self.debug.items() if not key.startswith("_")},
+        }
+
+    @classmethod
+    def from_checkpoint(cls, raw: dict[str, Any]) -> "RunState":
+        run = cls(
+            run_id=str(raw.get("run_id", "")),
+            task=str(raw.get("task", "")),
+            budget_tokens=int(raw.get("budget_tokens", 0)),
+            max_depth=int(raw.get("max_depth", 0)),
+            max_concurrency=int(raw.get("max_concurrency", 1)),
+            status=str(raw.get("status", "queued")),
+            tokens_used=int(raw.get("tokens_used", 0)),
+            reserved_tokens=int(raw.get("reserved_tokens", 0)),
+            cost=float(raw.get("cost", 0.0)),
+            created_at=float(raw.get("created_at", time.time())),
+            started_at=raw.get("started_at"),
+            ended_at=raw.get("ended_at"),
+            next_event_id=int(raw.get("next_event_id", 1)),
+            final_answer=str(raw.get("final_answer", "")),
+            slots=dict(raw.get("slots") or {}),
+            artifact_contents=dict(raw.get("artifact_contents") or {}),
+            reservations={key: int(value) for key, value in (raw.get("reservations") or {}).items()},
+            budget_soft_reported=bool(raw.get("budget_soft_reported", False)),
+            budget_hard_stop=bool(raw.get("budget_hard_stop", False)),
+            flags=RunFlags(**(raw.get("flags") or {})),
+            debug=dict(raw.get("debug") or {}),
+        )
+        for item in raw.get("agents") or []:
+            agent = AgentNode.from_dict(item)
+            run.agents[agent.id] = agent
+            run.agent_order.append(agent.id)
+        run.events = [RunEvent.from_dict(item) for item in raw.get("events") or []]
+        return run

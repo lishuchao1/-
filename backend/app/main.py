@@ -14,7 +14,8 @@ from pydantic import BaseModel, Field
 from .config import settings
 from .events import tick_hub
 from .llm import LlmClient
-from .orchestrator import execute_run
+from .models import RunState
+from .orchestrator import ResumeError, execute_run, prepare_resume
 from .store import store
 
 logger = logging.getLogger("agent_g.api")
@@ -39,11 +40,19 @@ class FailureBody(BaseModel):
     calls: int | None = Field(default=None, ge=0, le=1000)
 
 
+class ResumeBody(BaseModel):
+    extra_budget_tokens: int | None = Field(default=None, ge=10_000, le=2_000_000)
+
+
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.llm = LlmClient(settings)
     app.state.tasks = set()
     app.state.run_tasks = {}
+    recovered = store.attach_state_dir(settings.state_dir)
+    logger.info(
+        "loaded %s run checkpoints from %s", len(recovered), settings.state_dir
+    )
     try:
         yield
     finally:
@@ -92,18 +101,39 @@ async def create_run(body: CreateRunBody, request: Request) -> dict[str, object]
             settings.max_concurrency if body.max_concurrency is None else body.max_concurrency
         ),
     )
-    background = asyncio.create_task(execute_run(run, request.app.state.llm, store))
-    request.app.state.tasks.add(background)
-    request.app.state.run_tasks[run.run_id] = background
-
-    def _done(task: asyncio.Task[None]) -> None:
-        request.app.state.tasks.discard(task)
-        request.app.state.run_tasks.pop(run.run_id, None)
-        if not task.cancelled() and task.exception() is not None:
-            logger.error("background run failed", exc_info=task.exception())
-
-    background.add_done_callback(_done)
+    _launch(request.app, run, resume=False)
     return {"run_id": run.run_id, "status": run.status}
+
+
+def _launch(app: FastAPI, run: RunState, *, resume: bool) -> None:
+    task = asyncio.create_task(execute_run(run, app.state.llm, store, resume=resume))
+    app.state.tasks.add(task)
+    app.state.run_tasks[run.run_id] = task
+
+    def _done(done: asyncio.Task[None]) -> None:
+        app.state.tasks.discard(done)
+        if app.state.run_tasks.get(run.run_id) is done:
+            app.state.run_tasks.pop(run.run_id, None)
+        if not done.cancelled() and done.exception() is not None:
+            logger.error("background run failed", exc_info=done.exception())
+
+    task.add_done_callback(_done)
+
+
+@app.post("/api/runs/{run_id}/resume")
+async def resume_run(run_id: str, body: ResumeBody, request: Request) -> dict[str, object]:
+    run = store.get(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    try:
+        prepare_resume(run, body.extra_budget_tokens)
+    except ResumeError as error:
+        raise HTTPException(
+            status_code=409, detail={"error": error.code, "detail": error.detail}
+        ) from error
+    _launch(request.app, run, resume=True)
+    logger.info("resume requested run_id=%s budget=%s", run_id, run.budget_tokens)
+    return {"run_id": run_id, "status": run.status, "budget_tokens": run.budget_tokens}
 
 
 @app.post("/api/runs/{run_id}/cancel")

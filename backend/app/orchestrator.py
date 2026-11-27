@@ -29,6 +29,64 @@ MAX_SUPERVISOR_STEPS = 10
 MAX_WORKER_STEPS = 6
 MAX_WORKERS = 12
 MAX_SUMMARY_CHARS = 600
+ACTIVE_RUN_STATUSES = ("queued", "running")
+RESUMABLE_STATUSES = ("failed", "interrupted", "cancelled", "budget_exhausted")
+MIN_RESUME_HEADROOM = 1_000
+
+
+class ResumeError(Exception):
+    def __init__(self, code: str, detail: str):
+        super().__init__(detail)
+        self.code = code
+        self.detail = detail
+
+
+def prepare_resume(run: RunState, extra_budget_tokens: int | None) -> None:
+    if run.status in ACTIVE_RUN_STATUSES:
+        raise ResumeError("run_active", "run is still active; cancel it first")
+    if run.status not in RESUMABLE_STATUSES:
+        raise ResumeError("not_resumable", f"run status {run.status} cannot be resumed")
+    if extra_budget_tokens:
+        run.budget_tokens += extra_budget_tokens
+    if run.budget_tokens - run.tokens_used < MIN_RESUME_HEADROOM:
+        raise ResumeError("budget_too_small", "add extra_budget_tokens; no usable budget headroom")
+    run.debug["resume_from"] = run.status
+    run.debug.pop("watchdog_fired", None)
+    run.debug.pop("recovered_after_restart", None)
+    run.status = "queued"
+    run.ended_at = None
+    run.final_answer = ""
+    run.reserved_tokens = 0
+    run.reservations.clear()
+    run.budget_hard_stop = False
+    run.budget_soft_reported = False
+    run.flags.unverified = False
+
+
+def resume_brief(run: RunState) -> str:
+    lines = [
+        "RESUMED RUN: the previous attempt stopped before finishing.",
+        "Completed work is summarized below; do not spawn an agent for a task that is already done.",
+        f"Previous stop status: {run.debug.get('resume_from', 'unknown')}.",
+    ]
+    completed = [
+        agent
+        for agent in run.agent_list()
+        if agent.role != "supervisor" and agent.status in ("done", "partial")
+    ]
+    if completed:
+        lines.append("Completed agents:")
+        for agent in completed:
+            keys = ", ".join(agent.artifact_keys) or "none"
+            lines.append(
+                f"- {agent.id} {agent.role}: task={_clip(agent.task, 160)} | status={agent.status} "
+                f"| artifacts={keys} | summary={_clip(agent.summary, 160)}"
+            )
+    missing = [name for name, present in required_slots(run).items() if not present]
+    if missing:
+        lines.append(f"Required artifact slots still missing: {', '.join(missing)}.")
+    lines.append("Continue the remaining work. If everything needed is present, read the artifacts and finish.")
+    return "\n".join(lines)
 
 SPAWN_SCHEMA = {
     "type": "function",
@@ -112,10 +170,11 @@ def _clip(text: str, limit: int) -> str:
 
 
 class RunExecutor:
-    def __init__(self, run: RunState, client: LlmClient, store: RunStore):
+    def __init__(self, run: RunState, client: LlmClient, store: RunStore, *, resume: bool = False):
         self.run = run
         self.client = client
         self.store = store
+        self.resume = resume
         self.ledger = BudgetLedger(run, settings.budget_reserve_tokens)
         self.final_answer = ""
         self.worker_summaries: dict[str, str] = {}
@@ -124,8 +183,20 @@ class RunExecutor:
     async def execute(self) -> None:
         run = self.run
         run.status = "running"
-        run.started_at = time.time()
-        self.store.append(run, "run_started", summary=_clip(run.task, 120))
+        if run.started_at is None:
+            run.started_at = time.time()
+        if self.resume:
+            self.store.append(
+                run,
+                "run_resumed",
+                summary=f"resumed after {run.debug.get('resume_from', 'stop')}",
+                data={
+                    "resume_from": run.debug.get("resume_from", ""),
+                    "budget_tokens": run.budget_tokens,
+                },
+            )
+        else:
+            self.store.append(run, "run_started", summary=_clip(run.task, 120))
         root = self.store.add_agent(run, role="supervisor", task=run.task, parent_id=None, depth=0)
         executor_task = asyncio.current_task()
         watchdog = asyncio.create_task(self._watch_stall(executor_task))
@@ -242,6 +313,8 @@ class RunExecutor:
             {"role": "system", "content": SUPERVISOR_PROMPT},
             {"role": "user", "content": run.task},
         ]
+        if self.resume:
+            messages.append({"role": "user", "content": resume_brief(run)})
         result = await run_tool_loop(
             self.client,
             role="main",
@@ -388,7 +461,7 @@ class RunExecutor:
             if (
                 existing.role == role
                 and " ".join(existing.task.lower().split()) == normalized
-                and existing.status in ("queued", "running", "done", "partial")
+                and existing.status in ("queued", "running", "done")
             ):
                 self.store.append(
                     run,
@@ -585,6 +658,8 @@ class RunExecutor:
         )
 
 
-async def execute_run(run: RunState, client: LlmClient, store: RunStore) -> None:
-    executor = RunExecutor(run, client, store)
+async def execute_run(
+    run: RunState, client: LlmClient, store: RunStore, *, resume: bool = False
+) -> None:
+    executor = RunExecutor(run, client, store, resume=resume)
     await executor.execute()
