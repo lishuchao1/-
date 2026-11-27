@@ -56,6 +56,7 @@ def write_artifact(
     run.slots[cleaned] = {
         "key": cleaned,
         "owner": agent.role,
+        "last_agent": agent.id,
         "status": "filled",
         "version": version,
         "chars": len(content),
@@ -104,5 +105,8 @@ def required_slots(run: RunState) -> dict[str, bool]:
 
 def verdict_of(run: RunState) -> str:
     content = run.artifact_contents.get("reviewer.verdict", "")
-    first = content.strip().splitlines()[0].strip().upper() if content.strip() else ""
-    return first if first in ("PASS", "REJECT") else ""
+    if not content.strip():
+        return ""
+    first_line = content.strip().splitlines()[0].strip()
+    token = first_line.split(":", 1)[0].strip().upper()
+    return token if token in ("PASS", "REJECT") else ""
