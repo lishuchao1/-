@@ -8,6 +8,7 @@ artifact keys, so the parent sees evidence rather than raw transcripts.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import time
@@ -126,6 +127,8 @@ class RunExecutor:
         run.started_at = time.time()
         self.store.append(run, "run_started", summary=_clip(run.task, 120))
         root = self.store.add_agent(run, role="supervisor", task=run.task, parent_id=None, depth=0)
+        executor_task = asyncio.current_task()
+        watchdog = asyncio.create_task(self._watch_stall(executor_task))
         try:
             await self._supervise(root)
             if run.budget_hard_stop:
@@ -141,6 +144,11 @@ class RunExecutor:
             root.status = "config_error" if error.kind in ("structural_400", "auth") else "failed"
             if error.kind == "structural_400" and "reasoning" in str(error).lower():
                 run.flags.thinking_replay_broken = True
+            if error.kind == "breaker_open":
+                self.store.append(
+                    run, "breaker_open", agent=root,
+                    summary="provider circuit breaker is open",
+                )
             self.store.append(
                 run,
                 "agent_failed",
@@ -149,9 +157,13 @@ class RunExecutor:
                 data={"kind": error.kind, "status": error.status},
             )
         except asyncio.CancelledError:
-            run.status = "cancelled"
-            root.status = "cancelled"
-            self.store.append(run, "run_cancelled", agent=root, summary="cancelled")
+            if run.debug.get("watchdog_fired"):
+                run.status = "interrupted"
+                root.status = "cancelled"
+            else:
+                run.status = "cancelled"
+                root.status = "cancelled"
+                self.store.append(run, "run_cancelled", agent=root, summary="cancelled")
             raise
         except Exception as exc:  # defensive: never leave a run stuck in running
             logger.exception("run crashed")
@@ -160,6 +172,9 @@ class RunExecutor:
             run.final_answer = f"run failed: internal error: {_clip(str(exc), 300)}"
             self.store.append(run, "agent_failed", agent=root, summary=_clip(str(exc), 200))
         finally:
+            watchdog.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await watchdog
             run.ended_at = time.time()
             if root.status == "running":
                 root.status = "done" if self.final_answer else "partial"
@@ -170,6 +185,33 @@ class RunExecutor:
                 summary=f"status={run.status} tokens={run.tokens_used} cost={run.cost:.6f}",
                 data={"status": run.status, "elapsed_s": run.elapsed_s},
             )
+
+    async def _watch_stall(self, executor_task: asyncio.Task[None] | None) -> None:
+        run = self.run
+        timeout = settings.stall_timeout_s
+        interval = max(0.5, min(5.0, timeout / 4))
+        warned = False
+        while True:
+            await asyncio.sleep(interval)
+            last_seen = run.events[-1].ts if run.events else (run.started_at or run.created_at)
+            idle = time.time() - last_seen
+            if not warned and idle >= timeout * 0.6:
+                warned = True
+                self.store.append(
+                    run, "stall_warning",
+                    summary=f"no events for {int(idle)}s",
+                    data={"idle_s": round(idle, 1), "timeout_s": timeout},
+                )
+            if idle >= timeout:
+                run.debug["watchdog_fired"] = True
+                self.store.append(
+                    run, "run_interrupted",
+                    summary=f"no progress for {int(idle)}s; watchdog stopped the run",
+                    data={"idle_s": round(idle, 1)},
+                )
+                if executor_task is not None and not executor_task.done():
+                    executor_task.cancel()
+                return
 
     async def _supervise(self, root: AgentNode) -> None:
         run = self.run
@@ -294,6 +336,11 @@ class RunExecutor:
         agent.cost = round(agent.cost + cost, 8)
         run.cost = round(run.cost + cost, 8)
         self.ledger.charge(agent.id, step.tokens_in + step.tokens_out)
+        if step.used_fallback:
+            self.store.append(
+                run, "provider_fallback", agent=agent,
+                summary="primary provider failed; fallback answered",
+            )
         if self.ledger.soft_limit_reached() and not run.budget_soft_reported:
             run.budget_soft_reported = True
             self.store.append(
@@ -447,6 +494,11 @@ class RunExecutor:
             agent.latency_ms += int((time.perf_counter() - started) * 1000)
             if error.kind == "structural_400" and "reasoning" in str(error).lower():
                 run.flags.thinking_replay_broken = True
+            if error.kind == "breaker_open":
+                self.store.append(
+                    run, "breaker_open", agent=agent,
+                    summary="provider circuit breaker is open",
+                )
             self.store.append(
                 run, "agent_failed", agent=agent,
                 summary=f"{error.kind}: {_clip(str(error), 200)}",

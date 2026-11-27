@@ -16,6 +16,7 @@ from typing import Any, Literal
 
 import httpx
 
+from .breaker import CircuitBreaker
 from .config import ProviderConfig, Settings
 
 logger = logging.getLogger("agent_g.llm")
@@ -27,6 +28,7 @@ ErrorKind = Literal[
     "quota",
     "auth",
     "connect",
+    "breaker_open",
 ]
 
 STRUCTURAL_HINTS = (
@@ -42,7 +44,9 @@ STRUCTURAL_HINTS = (
 
 QUOTA_HINTS = ("insufficient balance", "quota", "arrears", "余额")
 
-FALLBACK_KINDS = frozenset({"quota", "auth", "retryable", "connect"})
+FALLBACK_KINDS = frozenset({"quota", "auth", "retryable", "connect", "breaker_open"})
+
+BREAKER_FAILURE_KINDS = frozenset({"quota", "auth", "retryable", "connect"})
 
 
 class LlmError(Exception):
@@ -80,6 +84,7 @@ class LlmResult:
     latency_ms: int = 0
     model: str = ""
     finish_reason: str = ""
+    used_fallback: bool = False
 
     def assistant_message(self) -> dict[str, Any]:
         message: dict[str, Any] = {"role": "assistant", "content": self.content}
@@ -108,11 +113,19 @@ class LlmClient:
     def __init__(self, cfg: Settings, transport: httpx.AsyncBaseTransport | None = None):
         self._cfg = cfg
         self._semaphore = asyncio.Semaphore(cfg.max_concurrency)
+        self._breakers: dict[str, CircuitBreaker] = {}
         self._client = httpx.AsyncClient(
             timeout=httpx.Timeout(cfg.timeout_s),
             transport=transport,
             trust_env=False,
         )
+
+    def _breaker(self, base_url: str) -> CircuitBreaker:
+        breaker = self._breakers.get(base_url)
+        if breaker is None:
+            breaker = CircuitBreaker(self._cfg.breaker_fail_threshold, self._cfg.breaker_cooldown_s)
+            self._breakers[base_url] = breaker
+        return breaker
 
     async def complete_with_fallback(
         self,
@@ -146,6 +159,7 @@ class LlmClient:
                     fallback_error.status,
                     primary_error.attempts + fallback_error.attempts,
                 ) from fallback_error
+            result.used_fallback = True
             return result, True
 
     async def aclose(self) -> None:
@@ -190,8 +204,15 @@ class LlmClient:
         }
 
         attempts_allowed = 1 + max(0, cfg.max_retries)
+        breaker = self._breaker(target.base_url)
         last_error: LlmError | None = None
         for attempt in range(1, attempts_allowed + 1):
+            if not breaker.allow():
+                raise LlmError(
+                    "breaker_open",
+                    f"circuit breaker open for {target.base_url}; try again later",
+                    attempts=attempt,
+                )
             if cfg.delay_ms:
                 await asyncio.sleep(cfg.delay_ms / 1000)
             started = time.perf_counter()
@@ -207,6 +228,7 @@ class LlmClient:
                 else:
                     latency_ms = int((time.perf_counter() - started) * 1000)
                     if response.status_code == 200:
+                        breaker.record_success()
                         return self._parse(response.json(), role, latency_ms)
                     body = response.text[:800]
                     last_error = self._http_error(response.status_code, body, attempt)
@@ -220,6 +242,8 @@ class LlmClient:
                 await asyncio.sleep(backoff)
                 continue
             if last_error is not None:
+                if last_error.kind in BREAKER_FAILURE_KINDS:
+                    breaker.record_failure()
                 raise last_error
         raise last_error or LlmError("retryable", "exhausted without result")
 

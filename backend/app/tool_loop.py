@@ -15,7 +15,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from .llm import LlmClient, LlmError, LlmResult, Usage
+from .llm import LlmClient, LlmError, Usage
 
 logger = logging.getLogger("agent_g.loop")
 
@@ -37,6 +37,7 @@ class StepRecord:
     tokens_out: int = 0
     latency_ms: int = 0
     invalid_tool: str = ""
+    used_fallback: bool = False
 
 
 @dataclass
@@ -75,12 +76,18 @@ async def run_tool_loop(
             stop_reason = "budget_exhausted"
             content = content or "stopped: token budget exhausted"
             break
-        result: LlmResult = await client.complete(
-            messages,
-            role=role,
-            tools=schemas or None,
-            max_tokens=max_tokens,
-        )
+        completer = getattr(client, "complete_with_fallback", None)
+        if callable(completer):
+            result, _ = await completer(
+                messages, role=role, tools=schemas or None, max_tokens=max_tokens
+            )
+        else:
+            result = await client.complete(
+                messages,
+                role=role,
+                tools=schemas or None,
+                max_tokens=max_tokens,
+            )
         total.tokens_in += result.usage.tokens_in
         total.tokens_out += result.usage.tokens_out
         total.cost = round(total.cost + result.usage.cost, 8)
@@ -91,6 +98,7 @@ async def run_tool_loop(
             tokens_in=result.usage.tokens_in,
             tokens_out=result.usage.tokens_out,
             latency_ms=result.latency_ms,
+            used_fallback=result.used_fallback,
         )
 
         if not result.tool_calls:
