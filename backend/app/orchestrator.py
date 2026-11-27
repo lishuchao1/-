@@ -198,6 +198,7 @@ class RunExecutor:
             max_steps=MAX_SUPERVISOR_STEPS,
             max_tokens=2000,
             terminal_tools=frozenset({"finish"}),
+            parallel_tools=frozenset({"spawn_agent"}),
             on_step=lambda step: self._on_supervisor_step(root, step),
             on_tool=lambda name, args, payload, invalid: self._on_tool(root, name, args, payload, invalid),
         )
@@ -364,6 +365,7 @@ class RunExecutor:
                 max_steps=MAX_WORKER_STEPS,
                 max_tokens=1800,
                 terminal_tools=frozenset({"finish"}),
+                parallel_tools=frozenset({"spawn_agent"}),
                 on_step=lambda step: self._on_worker_step(agent, step),
                 on_tool=lambda name, args, payload, invalid: self._on_tool(agent, name, args, payload, invalid),
             )

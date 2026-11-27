@@ -7,6 +7,7 @@ structured tool messages instead of crashing the run.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
 import logging
@@ -56,6 +57,7 @@ async def run_tool_loop(
     max_steps: int = 6,
     max_tokens: int | None = 900,
     terminal_tools: frozenset[str] = frozenset(),
+    parallel_tools: frozenset[str] = frozenset(),
     on_step: Callable[[StepRecord], None] | None = None,
     on_tool: Callable[[str, str, dict[str, Any], str], None] | None = None,
 ) -> LoopResult:
@@ -95,10 +97,12 @@ async def run_tool_loop(
             break
 
         messages.append(result.assistant_message())
+        calls = list(result.tool_calls)
         terminal = False
-        for call in result.tool_calls:
+
+        def handle(call: Any, payload: dict[str, Any], invalid: str) -> None:
+            nonlocal terminal, consecutive_invalid
             record.tools.append({"name": call.name, "arguments": call.arguments[:300]})
-            payload, invalid = await _dispatch(tools, call.name, call.arguments)
             if invalid:
                 record.invalid_tool = invalid
                 consecutive_invalid += 1
@@ -123,6 +127,18 @@ async def run_tool_loop(
                     "content": json.dumps(payload, ensure_ascii=False),
                 }
             )
+
+        fan_out = len(calls) > 1 and all(call.name in parallel_tools for call in calls)
+        if fan_out:
+            outcomes = await asyncio.gather(
+                *[_dispatch(tools, call.name, call.arguments) for call in calls]
+            )
+            for call, (payload, invalid) in zip(calls, outcomes):
+                handle(call, payload, invalid)
+        else:
+            for call in calls:
+                payload, invalid = await _dispatch(tools, call.name, call.arguments)
+                handle(call, payload, invalid)
         steps.append(record)
         if on_step:
             on_step(record)
