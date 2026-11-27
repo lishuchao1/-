@@ -40,6 +40,8 @@ EVENT_KINDS = frozenset(
         "artifact_overwrite",
         "review_passed",
         "review_rejected",
+        "review_skipped",
+        "finish_blocked",
         "budget_reserved",
         "budget_settled",
         "budget_refunded",
@@ -71,6 +73,8 @@ CHECKPOINT_TRIGGER_KINDS = frozenset(
         "budget_exhausted",
         "review_passed",
         "review_rejected",
+        "review_skipped",
+        "finish_blocked",
     }
 )
 

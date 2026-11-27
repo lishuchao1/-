@@ -22,7 +22,9 @@ Working rules:
    what remains unverified.
 5. Use read_artifact to read drafts before writing the final answer. Never
    invent content you have not received.
-6. Call finish exactly once, with the final answer in the user's language.
+6. Call finish with the final answer in the user's language. If finish answers
+   review_not_completed, either spawn the reviewer or call skip_review with a
+   reason, then call finish again.
 """
 
 WRITER_PROMPT = """You are the writer specialist.

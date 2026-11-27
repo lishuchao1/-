@@ -163,6 +163,22 @@ FINISH_WORKER_SCHEMA = {
     },
 }
 
+SKIP_REVIEW_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "skip_review",
+        "description": (
+            "Finish without a reviewer verdict. Only for tasks with nothing to review; "
+            "marks the run unverified."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {"reason": {"type": "string"}},
+            "required": ["reason"],
+        },
+    },
+}
+
 
 def _clip(text: str, limit: int) -> str:
     text = text.strip()
@@ -179,6 +195,7 @@ class RunExecutor:
         self.final_answer = ""
         self.worker_summaries: dict[str, str] = {}
         self._budget_exhausted_reported = False
+        self._review_gate_bypassed = False
 
     async def execute(self) -> None:
         run = self.run
@@ -229,6 +246,9 @@ class RunExecutor:
                 data={"kind": error.kind, "status": error.status},
             )
         except asyncio.CancelledError:
+            # The in-flight model call was abandoned, so its usage was never
+            # recorded; the token total may be below what the provider counted.
+            run.flags.tokens_may_be_underreported = True
             if run.debug.get("watchdog_fired"):
                 run.status = "interrupted"
                 root.status = "cancelled"
@@ -300,8 +320,47 @@ class RunExecutor:
                         "then call finish again"
                     ),
                 }
+            if not verdict_of(run) and not run.debug.get("review_skipped"):
+                if not self._review_gate_bypassed:
+                    self._review_gate_bypassed = True
+                    missing = [
+                        name for name, present in required_slots(run).items() if not present
+                    ]
+                    self.store.append(
+                        run,
+                        "finish_blocked",
+                        agent=root,
+                        summary="finish blocked: no reviewer verdict",
+                        data={"reason": "review_not_completed", "missing_slots": missing},
+                    )
+                    return {
+                        "error": "review_not_completed",
+                        "detail": (
+                            "spawn the reviewer for the current drafts, or call skip_review "
+                            "with a reason; calling finish again accepts an unverified result"
+                        ),
+                        "missing_slots": missing,
+                    }
+                run.flags.unverified = True
+                self.store.append(
+                    run,
+                    "review_skipped",
+                    agent=root,
+                    summary="review gate bypassed on retry",
+                )
             self.final_answer = final
             return {"ok": True, "chars": len(final)}
+
+        def skip_review_handler(args: dict[str, Any]) -> dict[str, Any]:
+            reason = str(args.get("reason", "")).strip()
+            if not reason:
+                return {"error": "reason_required", "detail": "state why no review is needed"}
+            run.debug["review_skipped"] = _clip(reason, 200)
+            run.flags.unverified = True
+            self.store.append(
+                run, "review_skipped", agent=root, summary=f"review skipped: {_clip(reason, 140)}"
+            )
+            return {"ok": True, "note": "the run will be marked unverified"}
 
         def read_handler(args: dict[str, Any]) -> dict[str, Any]:
             try:
@@ -317,6 +376,7 @@ class RunExecutor:
             "spawn_agent": ToolSpec(SPAWN_SCHEMA, spawn_handler),
             "read_artifact": ToolSpec(READ_SCHEMA, read_handler),
             "finish": ToolSpec(FINISH_SUPERVISOR_SCHEMA, finish_handler),
+            "skip_review": ToolSpec(SKIP_REVIEW_SCHEMA, skip_review_handler),
         }
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": SUPERVISOR_PROMPT},
