@@ -89,6 +89,7 @@ tokens_used + reserved_tokens + remaining == budget_tokens
 
 - 侧栏：新建 run（任务/预算/深度/并发）、run 列表、故障注入、tick 演示。
 - 主区：状态头（含取消/续跑/重连）、预算条、debug 字段、agent 树 + 选中详情、artifact 表（含 last writer）、最终答案（unverified 等标记）、可过滤事件转录。
+- 点击树节点打开该 agent 的 Conversation 面板：完整 system prompt、任务与 supervisor 提供的 context、每轮 assistant 文本/推理/tool_calls，以及 tool 结果；运行中的 agent 每 1.5s 刷新。转录随 checkpoint 落盘，重启后仍可查看。
 - 无 UI 框架，内联样式，`tsc --noEmit` 作为类型门。
 
 ## 9. 关键取舍
@@ -101,6 +102,6 @@ tokens_used + reserved_tokens + remaining == budget_tokens
 
 ## 10. 测试
 
-`backend/tests` 全部离线（假模型），38 条覆盖：预算账本不变量、软/硬限、深度工具表、去重、取消与少记标记、12 agent 上限、上下文隔离、token 对账、预留耗尽 → partial、越权写入、评审门/skip_review、未知工具、结构 400、任务 400 收窄重试、可重试重试次数、reasoning 回传、SSE 补发/实时/去重、checkpoint 往返与 resume 复用。
+`backend/tests` 全部离线（假模型），40 条覆盖：预算账本不变量、软/硬限、深度工具表、去重、取消与少记标记、12 agent 上限、上下文隔离（含每个 agent 的转录内容与 checkpoint 往返）、token 对账、预留耗尽 → partial、越权写入、评审门/skip_review、未知工具、结构 400、任务 400 收窄重试、可重试重试次数、reasoning 回传、SSE 补发/实时/去重、checkpoint 往返与 resume 复用。
 
 真实模型的验证只通过少量探针和小 run 完成，原始记录在 `ai-logs/`。

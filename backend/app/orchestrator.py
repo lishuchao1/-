@@ -384,6 +384,7 @@ class RunExecutor:
         ]
         if self.resume:
             messages.append({"role": "user", "content": resume_brief(run)})
+        root.transcript = messages
         result = await run_tool_loop(
             self.client,
             role="main",
@@ -692,6 +693,7 @@ class RunExecutor:
             {"role": "system", "content": ROLE_PROMPTS[agent.role]},
             {"role": "user", "content": worker_user_message(agent.task, context)},
         ]
+        agent.transcript = messages
         try:
             result = await run_tool_loop(
                 self.client,

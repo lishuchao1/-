@@ -1,4 +1,4 @@
-import type { FailureMode, Health, RunListItem, RunSummary } from "./types";
+import type { AgentConversation, FailureMode, Health, RunListItem, RunSummary } from "./types";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, init);
@@ -46,6 +46,10 @@ export function createRun(body: {
 
 export function fetchRun(runId: string): Promise<RunSummary> {
   return request<RunSummary>(`/api/runs/${runId}`);
+}
+
+export function fetchAgentConversation(runId: string, agentId: string): Promise<AgentConversation> {
+  return request<AgentConversation>(`/api/runs/${runId}/agents/${agentId}/conversation`);
 }
 
 export function cancelRun(runId: string): Promise<{ run_id: string; status: string }> {

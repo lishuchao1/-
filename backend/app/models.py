@@ -58,6 +58,7 @@ class AgentNode:
     summary: str = ""
     error_kind: str = ""
     artifact_keys: list[str] = field(default_factory=list)
+    transcript: list[dict[str, Any]] = field(default_factory=list, repr=False)
 
     def public(self) -> dict[str, Any]:
         return {
@@ -77,6 +78,11 @@ class AgentNode:
             "artifact_keys": list(self.artifact_keys),
         }
 
+    def checkpoint(self) -> dict[str, Any]:
+        data = self.public()
+        data["transcript"] = self.transcript
+        return data
+
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "AgentNode":
         return cls(
@@ -94,6 +100,7 @@ class AgentNode:
             summary=str(raw.get("summary", "")),
             error_kind=str(raw.get("error_kind", "")),
             artifact_keys=list(raw.get("artifact_keys") or []),
+            transcript=list(raw.get("transcript") or []),
         )
 
 
@@ -228,7 +235,7 @@ class RunState:
             "created_at": self.created_at,
             "started_at": self.started_at,
             "ended_at": self.ended_at,
-            "agents": [agent.public() for agent in self.agent_list()],
+            "agents": [agent.checkpoint() for agent in self.agent_list()],
             "events": [event.to_dict() for event in self.events],
             "next_event_id": self.next_event_id,
             "final_answer": self.final_answer,

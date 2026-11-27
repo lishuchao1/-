@@ -231,6 +231,23 @@ def get_run(run_id: str) -> dict[str, object]:
     return run.public()
 
 
+@app.get("/api/runs/{run_id}/agents/{agent_id}/conversation")
+def get_agent_conversation(run_id: str, agent_id: str) -> dict[str, object]:
+    run = store.get(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    agent = run.agents.get(agent_id)
+    if agent is None:
+        raise HTTPException(status_code=404, detail="agent not found")
+    return {
+        "agent_id": agent.id,
+        "role": agent.role,
+        "status": agent.status,
+        "task": agent.task,
+        "messages": agent.transcript,
+    }
+
+
 @app.get("/api/runs/{run_id}/events")
 def get_run_events(run_id: str) -> dict[str, object]:
     run = store.get(run_id)

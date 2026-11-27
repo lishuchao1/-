@@ -83,6 +83,28 @@ export type ArtifactSlot = {
   last_agent?: string;
 };
 
+export type ConversationToolCall = {
+  id: string;
+  type?: string;
+  function: { name: string; arguments: string };
+};
+
+export type ConversationMessage = {
+  role: "system" | "user" | "assistant" | "tool";
+  content?: string | null;
+  reasoning_content?: string | null;
+  tool_calls?: ConversationToolCall[];
+  tool_call_id?: string;
+};
+
+export type AgentConversation = {
+  agent_id: string;
+  role: string;
+  status: AgentStatus;
+  task: string;
+  messages: ConversationMessage[];
+};
+
 export type RunEvent = {
   id: number;
   ts: number;

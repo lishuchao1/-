@@ -12,9 +12,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 from typing import Any
 
 from app.llm import LlmError
+from app.models import RunState
 from app.orchestrator import execute_run
 from app.prompts import SUPERVISOR_PROMPT, WRITER_PROMPT
 from app.store import RunStore
@@ -266,6 +268,45 @@ async def test_worker_context_is_isolated() -> None:
         assert call["messages"][0]["content"] == WRITER_PROMPT
     for call in beta:
         assert "CTX_ALPHA" not in str(call["messages"])
+    worker_agents = [agent for agent in run.agent_list() if agent.depth > 0]
+    assert len(worker_agents) == 2
+    for agent in worker_agents:
+        transcript = agent.transcript
+        assert transcript[0]["role"] == "system"
+        assert transcript[0]["content"] == WRITER_PROMPT
+        joined = str(transcript)
+        assert SUPERVISOR_PROMPT not in joined
+        assert agent.task.split(",")[0][:12] in str(transcript[1])
+        assert any(message["role"] == "tool" for message in transcript)
+        other = "CTX_BETA" if "CTX_ALPHA" in joined else "CTX_ALPHA"
+        assert other not in joined
+    root_transcript = run.agents["a1"].transcript
+    assert root_transcript[0] == {"role": "system", "content": SUPERVISOR_PROMPT}
+    assert any(message.get("tool_calls") for message in root_transcript)
+    root_text = str(root_transcript)
+    assert "CTX_ALPHA" in root_text
+    assert WRITER_PROMPT not in root_text
+
+
+async def test_transcript_survives_checkpoint_roundtrip() -> None:
+    store = RunStore()
+    run = make_run(store)
+    client = RecordingClient(
+        steps_script(
+            [
+                [tool("spawn_agent", {"role": "writer", "task": "draft gamma", "context": "CTX_G"})],
+                [tool("skip_review", {"reason": "roundtrip test"})],
+                [tool("finish", {"final_answer": FINAL_ANSWER})],
+            ]
+        )
+    )
+    await execute_run(run, client, store)
+    data = json.loads(json.dumps(run.to_checkpoint(), ensure_ascii=False))
+    restored = RunState.from_checkpoint(data)
+    assert restored is not None
+    for agent in run.agent_list():
+        assert restored.agents[agent.id].transcript == agent.transcript
+    assert restored.public()["agents"] == run.public()["agents"]
 
 
 async def test_tokens_reconcile_and_review_passes() -> None:

@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
+import { fetchAgentConversation } from "./api";
 import { AgentTree } from "./AgentTree";
 import { BudgetBar } from "./BudgetBar";
 import { FinalPanel, Pill } from "./FinalPanel";
 import { SlotTable } from "./SlotTable";
 import { colors, mutedStyle, panelStyle, statusColor } from "./theme";
-import { isTerminal, type RunSummary } from "./types";
+import { isTerminal, type AgentConversation, type ConversationMessage, type RunSummary } from "./types";
 import type { StreamState } from "./useRunStream";
 
 type DebugPatch = {
@@ -45,6 +46,74 @@ const buttonStyle = {
   fontSize: 12,
 } as const;
 
+const preStyle = {
+  whiteSpace: "pre-wrap",
+  wordBreak: "break-word",
+  background: colors.bg,
+  border: `1px solid ${colors.border}`,
+  borderRadius: 6,
+  padding: 8,
+  margin: "4px 0 0",
+  fontSize: 11,
+  maxHeight: 260,
+  overflow: "auto",
+} as const;
+
+function prettyJson(text: string): string {
+  try {
+    return JSON.stringify(JSON.parse(text), null, 2);
+  } catch {
+    return text;
+  }
+}
+
+function roleColor(role: ConversationMessage["role"]): string {
+  if (role === "system") return colors.purple;
+  if (role === "assistant") return colors.blue;
+  if (role === "tool") return colors.cyan;
+  return colors.amber;
+}
+
+function MessageRow({ message, index }: { message: ConversationMessage; index: number }) {
+  const body = message.content ?? "";
+  return (
+    <div style={{ borderTop: `1px solid ${colors.border}`, paddingTop: 8, marginTop: 8 }}>
+      <div style={{ fontSize: 11, color: colors.muted }}>
+        #{index + 1} <span style={{ color: roleColor(message.role) }}>{message.role}</span>
+        {message.tool_call_id ? ` · ${message.tool_call_id}` : ""}
+      </div>
+      {message.reasoning_content ? (
+        <details style={{ marginTop: 4 }}>
+          <summary style={{ ...mutedStyle, fontSize: 11, cursor: "pointer" }}>
+            thinking ({message.reasoning_content.length} chars)
+          </summary>
+          <pre style={preStyle}>{message.reasoning_content}</pre>
+        </details>
+      ) : null}
+      {body ? (
+        message.role === "system" ? (
+          <details style={{ marginTop: 4 }}>
+            <summary style={{ ...mutedStyle, fontSize: 11, cursor: "pointer" }}>
+              system prompt ({body.length} chars)
+            </summary>
+            <pre style={preStyle}>{body}</pre>
+          </details>
+        ) : (
+          <pre style={preStyle}>{body}</pre>
+        )
+      ) : null}
+      {message.tool_calls?.map((call) => (
+        <div key={call.id} style={{ marginTop: 6 }}>
+          <div style={{ fontSize: 12 }}>
+            tool call · <strong>{call.function.name}</strong> · <span style={mutedStyle}>{call.id}</span>
+          </div>
+          <pre style={preStyle}>{prettyJson(call.function.arguments)}</pre>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function RunView({
   run,
   streamState,
@@ -60,6 +129,9 @@ export function RunView({
   const [debugBudget, setDebugBudget] = useState(0);
   const [debugDepth, setDebugDepth] = useState(0);
   const [debugConcurrency, setDebugConcurrency] = useState(1);
+  const [conversation, setConversation] = useState<AgentConversation | null>(null);
+  const [conversationError, setConversationError] = useState<string | null>(null);
+  const selectedAgentStatus = run?.agents.find((agent) => agent.id === selectedAgent)?.status;
 
   useEffect(() => {
     setSelectedAgent(null);
@@ -67,6 +139,32 @@ export function RunView({
     setDebugDepth(run?.max_depth ?? 0);
     setDebugConcurrency(run?.max_concurrency ?? 1);
   }, [run?.run_id]);
+
+  useEffect(() => {
+    setConversation(null);
+    setConversationError(null);
+    if (!run?.run_id || !selectedAgent) return;
+    let stopped = false;
+    let timer: number | undefined;
+    const load = async () => {
+      try {
+        const data = await fetchAgentConversation(run.run_id, selectedAgent);
+        if (stopped) return;
+        setConversation(data);
+        if (data.status === "queued" || data.status === "running") {
+          timer = window.setTimeout(load, 1500);
+        }
+      } catch (error) {
+        if (stopped) return;
+        setConversationError(error instanceof Error ? error.message : String(error));
+      }
+    };
+    load();
+    return () => {
+      stopped = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [run?.run_id, selectedAgent, selectedAgentStatus]);
 
   if (!run) {
     return (
@@ -243,6 +341,40 @@ export function RunView({
           <SlotTable slots={run.slots} />
         </section>
       </div>
+
+      <section style={panelStyle}>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap", marginBottom: 6 }}>
+          <strong>Conversation</strong>
+          {selected ? (
+            <span style={{ fontSize: 12 }}>
+              <strong>{selected.id}</strong> {selected.role} · depth {selected.depth} · {selected.status}
+            </span>
+          ) : (
+            <span style={mutedStyle}>select a node in the tree to see exactly what that agent could see</span>
+          )}
+        </div>
+        {selected ? (
+          <>
+            <div style={{ ...mutedStyle, fontSize: 11, marginBottom: 4 }}>
+              {selected.depth === 0
+                ? "Supervisor: its system prompt, the user task and its own tool round trips. Sub-agent conversations are not in its context."
+                : "Sub-agent: only its own system prompt, assignment, supervisor-provided context and its own tool round trips. The supervisor's conversation and sibling agents are not in this context."}
+            </div>
+            {conversationError ? (
+              <div style={{ color: colors.red, fontSize: 12 }}>{conversationError}</div>
+            ) : null}
+            {!conversation && !conversationError ? (
+              <div style={{ ...mutedStyle, fontSize: 12 }}>loading conversation…</div>
+            ) : null}
+            {conversation && conversation.messages.length === 0 ? (
+              <div style={{ ...mutedStyle, fontSize: 12 }}>no transcript recorded for this agent</div>
+            ) : null}
+            {conversation?.messages.map((message, index) => (
+              <MessageRow key={index} message={message} index={index} />
+            ))}
+          </>
+        ) : null}
+      </section>
 
       <section style={panelStyle}>
         <div style={{ marginBottom: 8, fontWeight: 600 }}>Final answer</div>
