@@ -142,6 +142,7 @@ class RunExecutor:
             run.status = "failed"
             run.final_answer = f"run failed: {error.kind}: {_clip(str(error), 300)}"
             root.status = "config_error" if error.kind in ("structural_400", "auth") else "failed"
+            root.error_kind = error.kind
             if error.kind == "structural_400" and "reasoning" in str(error).lower():
                 run.flags.thinking_replay_broken = True
             if error.kind == "breaker_open":

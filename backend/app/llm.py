@@ -48,6 +48,63 @@ FALLBACK_KINDS = frozenset({"quota", "auth", "retryable", "connect", "breaker_op
 
 BREAKER_FAILURE_KINDS = frozenset({"quota", "auth", "retryable", "connect"})
 
+INJECT_MODES = ("off", "transient", "permanent", "structural", "task")
+
+
+class FailureInjector:
+    """Deterministic fault insertion for demos and tests.
+
+    Injected failures use the same error taxonomy as real transport failures,
+    so retry, breaker and fallback paths are exercised unchanged. `calls`
+    limits how many model attempts are affected; None means every attempt
+    until the mode is changed.
+    """
+
+    def __init__(self, mode: str = "off", calls: int | None = None):
+        self.mode = "off"
+        self.remaining: int | None = 0
+        self.configure(mode, calls)
+
+    def configure(self, mode: str, calls: int | None = None) -> None:
+        if mode not in INJECT_MODES:
+            raise ValueError(f"mode must be one of {INJECT_MODES}")
+        self.mode = mode
+        if calls is None:
+            if mode == "off":
+                self.remaining = 0
+            elif mode == "permanent":
+                self.remaining = None
+            else:
+                self.remaining = 1
+        else:
+            self.remaining = max(0, int(calls))
+
+    def snapshot(self) -> dict[str, object]:
+        return {"mode": self.mode, "remaining": self.remaining}
+
+    def take(self) -> LlmError | None:
+        if self.mode == "off":
+            return None
+        if self.remaining is not None:
+            if self.remaining <= 0:
+                return None
+            self.remaining -= 1
+        if self.mode == "structural":
+            return LlmError("structural_400", "injected structural failure", status=400)
+        if self.mode == "task":
+            return LlmError("task_400", "injected task failure", status=400)
+        return LlmError("retryable", "injected transient failure", status=503)
+
+
+def _narrow_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Drop provider-specific fields that some gateways reject on replay."""
+    cleaned: list[dict[str, Any]] = []
+    for message in messages:
+        if message.get("role") == "assistant" and "reasoning_content" in message:
+            message = {key: value for key, value in message.items() if key != "reasoning_content"}
+        cleaned.append(message)
+    return cleaned
+
 
 class LlmError(Exception):
     def __init__(self, kind: ErrorKind, message: str, status: int | None = None, attempts: int = 1):
@@ -119,6 +176,8 @@ class LlmClient:
             transport=transport,
             trust_env=False,
         )
+        self.injector = FailureInjector(cfg.failure_inject_mode)
+        self.narrow_retries = 0
 
     def _breaker(self, base_url: str) -> CircuitBreaker:
         breaker = self._breakers.get(base_url)
@@ -206,6 +265,7 @@ class LlmClient:
         attempts_allowed = 1 + max(0, cfg.max_retries)
         breaker = self._breaker(target.base_url)
         last_error: LlmError | None = None
+        narrowed = False
         for attempt in range(1, attempts_allowed + 1):
             if not breaker.allow():
                 raise LlmError(
@@ -216,22 +276,31 @@ class LlmClient:
             if cfg.delay_ms:
                 await asyncio.sleep(cfg.delay_ms / 1000)
             started = time.perf_counter()
-            async with self._semaphore:
-                try:
-                    response = await self._client.post(url, headers=headers, json=payload)
-                except httpx.TimeoutException as exc:
-                    last_error = LlmError("retryable", f"timeout: {exc!r}", attempts=attempt)
-                except httpx.TransportError as exc:
-                    last_error = LlmError("connect", f"transport: {exc!r}", attempts=attempt)
-                except asyncio.CancelledError:
-                    raise
-                else:
-                    latency_ms = int((time.perf_counter() - started) * 1000)
-                    if response.status_code == 200:
-                        breaker.record_success()
-                        return self._parse(response.json(), role, latency_ms)
-                    body = response.text[:800]
-                    last_error = self._http_error(response.status_code, body, attempt)
+            injected = self.injector.take()
+            if injected is not None:
+                injected.attempts = attempt
+                last_error = injected
+                logger.warning(
+                    "injected failure mode=%s kind=%s attempt=%s/%s",
+                    self.injector.mode, injected.kind, attempt, attempts_allowed,
+                )
+            else:
+                async with self._semaphore:
+                    try:
+                        response = await self._client.post(url, headers=headers, json=payload)
+                    except httpx.TimeoutException as exc:
+                        last_error = LlmError("retryable", f"timeout: {exc!r}", attempts=attempt)
+                    except httpx.TransportError as exc:
+                        last_error = LlmError("connect", f"transport: {exc!r}", attempts=attempt)
+                    except asyncio.CancelledError:
+                        raise
+                    else:
+                        latency_ms = int((time.perf_counter() - started) * 1000)
+                        if response.status_code == 200:
+                            breaker.record_success()
+                            return self._parse(response.json(), role, latency_ms)
+                        body = response.text[:800]
+                        last_error = self._http_error(response.status_code, body, attempt)
 
             if last_error is not None and is_retryable(last_error) and attempt < attempts_allowed:
                 backoff = cfg.retry_backoff_s * attempt
@@ -242,6 +311,13 @@ class LlmClient:
                 await asyncio.sleep(backoff)
                 continue
             if last_error is not None:
+                if last_error.kind == "task_400" and attempt < attempts_allowed and not narrowed:
+                    narrowed = True
+                    self.narrow_retries += 1
+                    payload["messages"] = _narrow_messages(messages)
+                    payload["thinking"] = {"type": "disabled"}
+                    logger.warning("task_400 from model=%s; retrying once with narrowed payload", model)
+                    continue
                 if last_error.kind in BREAKER_FAILURE_KINDS:
                     breaker.record_failure()
                 raise last_error

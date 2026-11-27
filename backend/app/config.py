@@ -131,7 +131,7 @@ def load_settings() -> Settings:
         max_depth=_int("RUN_DEFAULT_MAX_DEPTH", 2),
         max_concurrency=_int("RUN_DEFAULT_MAX_CONCURRENCY", 3),
         context_max_chars=_int("CONTEXT_MAX_CHARS", 2_000),
-        failure_inject_mode=_str("FAILURE_INJECT_MODE", "transient"),
+        failure_inject_mode=_str("FAILURE_INJECT_MODE", "off"),
         breaker_fail_threshold=_int("BREAKER_FAIL_THRESHOLD", 3),
         breaker_cooldown_s=_float("BREAKER_COOLDOWN_S", 30.0),
         stall_timeout_s=_float("RUN_STALL_TIMEOUT_S", 180.0),

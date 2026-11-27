@@ -34,10 +34,16 @@ class CreateRunBody(BaseModel):
     max_concurrency: int | None = Field(default=None, ge=1, le=6)
 
 
+class FailureBody(BaseModel):
+    mode: str = Field(pattern="^(off|transient|permanent|structural|task)$")
+    calls: int | None = Field(default=None, ge=0, le=1000)
+
+
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.llm = LlmClient(settings)
     app.state.tasks = set()
+    app.state.run_tasks = {}
     try:
         yield
     finally:
@@ -64,7 +70,7 @@ app.add_middleware(
 
 
 @app.get("/health")
-def health() -> dict[str, object]:
+def health(request: Request) -> dict[str, object]:
     return {
         "status": "ok",
         "uptime_s": round(time.time() - STARTED_AT, 1),
@@ -72,6 +78,7 @@ def health() -> dict[str, object]:
         "model_main": settings.provider.model_main,
         "model_sub": settings.provider.model_sub,
         "fallback_configured": settings.fallback is not None,
+        "failure_inject_mode": request.app.state.llm.injector.mode,
     }
 
 
@@ -87,14 +94,44 @@ async def create_run(body: CreateRunBody, request: Request) -> dict[str, object]
     )
     background = asyncio.create_task(execute_run(run, request.app.state.llm, store))
     request.app.state.tasks.add(background)
+    request.app.state.run_tasks[run.run_id] = background
 
     def _done(task: asyncio.Task[None]) -> None:
         request.app.state.tasks.discard(task)
+        request.app.state.run_tasks.pop(run.run_id, None)
         if not task.cancelled() and task.exception() is not None:
             logger.error("background run failed", exc_info=task.exception())
 
     background.add_done_callback(_done)
     return {"run_id": run.run_id, "status": run.status}
+
+
+@app.post("/api/runs/{run_id}/cancel")
+async def cancel_run(run_id: str, request: Request) -> dict[str, object]:
+    run = store.get(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    if run.status not in ("queued", "running"):
+        raise HTTPException(status_code=409, detail=f"run is not active: {run.status}")
+    run.cancel_event.set()
+    task = request.app.state.run_tasks.get(run_id)
+    if task is not None and not task.done():
+        task.cancel()
+    logger.info("cancel requested run_id=%s", run_id)
+    return {"run_id": run_id, "status": "cancelling"}
+
+
+@app.get("/api/debug/failures")
+def get_failure_injection(request: Request) -> dict[str, object]:
+    return request.app.state.llm.injector.snapshot()
+
+
+@app.post("/api/debug/failures")
+def set_failure_injection(body: FailureBody, request: Request) -> dict[str, object]:
+    request.app.state.llm.injector.configure(body.mode, body.calls)
+    snapshot = request.app.state.llm.injector.snapshot()
+    logger.warning("failure injection configured %s", snapshot)
+    return snapshot
 
 
 @app.get("/api/runs")
